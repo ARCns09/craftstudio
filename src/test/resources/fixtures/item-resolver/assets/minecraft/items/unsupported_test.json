@@ -1,0 +1,9 @@
+{
+  "model": {
+    "type": "minecraft:future_dispatch",
+    "model": "minecraft:item/simple",
+    "future_data": {
+      "preserved": true
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "textures": {
+    "all": "minecraft:block/stone"
+  },
+  "elements": [
+    {
+      "faces": {
+        "north": {
+          "texture": "#all"
+        }
+      }
+    }
+  ]
+}

@@ -54,10 +54,13 @@ public final class AssetDetailsScreen extends Screen {
 		if (detailList != null) {
 			detailScrollY = detailList.getScrollY();
 		}
-		if (asset.kind() == AssetKind.BLOCK && !resolutionRequested) {
+		if (!resolutionRequested) {
 			resolutionRequested = true;
 			MinecraftClient clientReference = client;
-			context.resolveBlock(asset).whenComplete((result, error) -> clientReference.execute(() -> {
+			var resolutionFuture = asset.kind() == AssetKind.BLOCK
+				? context.resolveBlock(asset)
+				: context.resolveItem(asset);
+			resolutionFuture.whenComplete((result, error) -> clientReference.execute(() -> {
 				if (error == null) {
 					resolution = result;
 					rows = createGraphRows(result);
@@ -68,14 +71,6 @@ public final class AssetDetailsScreen extends Screen {
 					clearAndInit();
 				}
 			}));
-		}
-		if (asset.kind() == AssetKind.ITEM) {
-			rows = List.of(
-				DependencyTreeWidget.Row.notice(
-					Text.translatable("screen.craftstudio.asset_details.item_deferred"),
-					CraftStudioTheme.INFORMATION
-				)
-			);
 		}
 
 		int margin = getMargin();
@@ -153,12 +148,9 @@ public final class AssetDetailsScreen extends Screen {
 			firstMetadataY + metadataSpacing * 2
 		);
 
-		Text sectionTitle = asset.kind() == AssetKind.BLOCK
-			? Text.translatable("screen.craftstudio.asset_details.dependencies")
-			: Text.translatable("screen.craftstudio.asset_details.placeholder");
 		drawContext.drawTextWithShadow(
 			textRenderer,
-			sectionTitle,
+			Text.translatable("screen.craftstudio.asset_details.dependencies"),
 			textX,
 			compactHeight ? 68 : 86,
 			CraftStudioTheme.TEXT_PRIMARY
@@ -240,7 +232,7 @@ public final class AssetDetailsScreen extends Screen {
 		if (resolutionError != null) {
 			return Text.translatable("screen.craftstudio.asset_details.failed");
 		}
-		if (asset.kind() == AssetKind.BLOCK && resolution == null) {
+		if (resolution == null) {
 			return Text.translatable("screen.craftstudio.asset_details.resolving");
 		}
 		if (resolution != null) {
@@ -251,7 +243,7 @@ public final class AssetDetailsScreen extends Screen {
 				resolution.stats().issueCount()
 			);
 		}
-		return Text.translatable("screen.craftstudio.asset_details.item_deferred");
+		return Text.translatable("screen.craftstudio.asset_details.resolving");
 	}
 
 	private List<DependencyTreeWidget.Row> displayRows() {
@@ -261,7 +253,7 @@ public final class AssetDetailsScreen extends Screen {
 				CraftStudioTheme.ERROR
 			));
 		}
-		if (asset.kind() == AssetKind.BLOCK && resolution == null) {
+		if (resolution == null) {
 			return List.of(DependencyTreeWidget.Row.notice(
 				Text.translatable("screen.craftstudio.asset_details.resolving"),
 				CraftStudioTheme.INFORMATION

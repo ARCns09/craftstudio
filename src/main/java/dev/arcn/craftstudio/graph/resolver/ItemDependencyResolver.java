@@ -30,31 +30,28 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
-public final class BlockDependencyResolver {
+public final class ItemDependencyResolver {
 	private static final String DEFAULT_NAMESPACE = "minecraft";
+	private static final int MAX_DEFINITION_DEPTH = 64;
 
 	private final AssetSource source;
 	private final String targetVersion;
-	private final ItemDependencyResolver itemDependencyResolver;
 
-	public BlockDependencyResolver(AssetSource source, String targetVersion) {
+	public ItemDependencyResolver(AssetSource source, String targetVersion) {
 		this.source = Objects.requireNonNull(source, "source");
 		this.targetVersion = requireText(targetVersion, "targetVersion");
-		this.itemDependencyResolver = new ItemDependencyResolver(source, targetVersion);
 	}
 
-	public AssetResolutionResult resolve(AssetKey block) {
-		if (block.kind() != AssetKind.BLOCK) {
-			throw new IllegalArgumentException("BlockDependencyResolver only accepts block asset keys.");
+	public AssetResolutionResult resolve(AssetKey item) {
+		if (item.kind() != AssetKind.ITEM) {
+			throw new IllegalArgumentException("ItemDependencyResolver only accepts item asset keys.");
 		}
-		ResolutionContext context = new ResolutionContext(block);
-		return context.resolve();
+		return new ResolutionContext(item).resolve();
 	}
 
 	private final class ResolutionContext {
@@ -66,12 +63,14 @@ public final class BlockDependencyResolver {
 		private final Set<ResourceIdentifier> resolvingModels = new LinkedHashSet<>();
 		private final Set<String> resolvedModelTextures = new HashSet<>();
 		private final Map<String, String> atlasNodes = new HashMap<>();
+		private final Set<String> usedAtlases = new LinkedHashSet<>();
 		private final String rootNodeId;
+		private ResourcePath itemDefinitionPath;
 
 		private ResolutionContext(AssetKey root) {
 			this.root = root;
 			AssetGraphNode rootNode = node(
-				GraphNodeType.BLOCK,
+				GraphNodeType.ITEM,
 				root.namespace(),
 				root.path(),
 				"",
@@ -84,22 +83,39 @@ public final class BlockDependencyResolver {
 		}
 
 		private AssetResolutionResult resolve() {
-			ResourcePath blockstatePath = new ResourcePath(
+			itemDefinitionPath = new ResourcePath(
 				root.namespace(),
-				"blockstates/" + root.path() + ".json"
+				"items/" + root.path() + ".json"
 			);
-			LoadedJson blockstate = loadJson(
-				blockstatePath,
-				GraphNodeType.BLOCKSTATE_FILE,
+			LoadedJson definition = loadJson(
+				itemDefinitionPath,
+				GraphNodeType.CLIENT_ITEM_FILE,
 				DependencyClassification.REQUIRED_TRANSITIVE,
 				true,
-				"MISSING_BLOCKSTATE"
+				"MISSING_CLIENT_ITEM"
 			);
-			addEdge(rootNodeId, blockstate.nodeId(), GraphEdgeType.HAS_BLOCKSTATE, "block appearance");
-			if (blockstate.json() != null) {
-				parseBlockstate(blockstate);
+			addEdge(rootNodeId, definition.nodeId(), GraphEdgeType.HAS_CLIENT_ITEM, "item definition");
+			if (definition.json() != null) {
+				JsonElement model = definition.json().get("model");
+				if (model == null) {
+					addIssue(
+						ResolutionIssueSeverity.ERROR,
+						"MISSING_ITEM_MODEL_DEFINITION",
+						"Client item definition has no model field.",
+						itemDefinitionPath,
+						"$.model"
+					);
+				} else {
+					traverseDefinition(
+						model,
+						definition.nodeId(),
+						"Default",
+						"$.model",
+						0
+					);
+				}
 			}
-			resolveBlockItemRepresentation();
+			validateAtlasConstraints();
 
 			AssetGraph graph = new AssetGraph(rootNodeId, nodes, List.copyOf(edges));
 			int missingCount = (int) nodes.values().stream()
@@ -113,160 +129,544 @@ public final class BlockDependencyResolver {
 			);
 		}
 
-		private void parseBlockstate(LoadedJson blockstate) {
-			JsonObject json = blockstate.json();
-			boolean foundDefinition = false;
-			if (json.has("variants")) {
-				foundDefinition = true;
-				if (json.get("variants").isJsonObject()) {
-					for (Map.Entry<String, JsonElement> variant : json.getAsJsonObject("variants").entrySet()) {
-						String condition = variant.getKey().isEmpty() ? "default" : variant.getKey();
-						parseModelApplications(
-							blockstate.nodeId(),
-							variant.getValue(),
-							GraphEdgeType.HAS_VARIANT,
-							"variant " + condition,
-							blockstate.path(),
-							"$.variants." + variant.getKey()
-						);
-					}
-				} else {
-					addIssue(
-						ResolutionIssueSeverity.ERROR,
-						"INVALID_VARIANTS",
-						"Blockstate variants must be a JSON object.",
-						blockstate.path(),
-						"$.variants"
-					);
-				}
-			}
-			if (json.has("multipart")) {
-				foundDefinition = true;
-				if (json.get("multipart").isJsonArray()) {
-					JsonArray multipart = json.getAsJsonArray("multipart");
-					for (int index = 0; index < multipart.size(); index++) {
-						JsonElement partElement = multipart.get(index);
-						if (!partElement.isJsonObject()) {
-							addIssue(
-								ResolutionIssueSeverity.ERROR,
-								"INVALID_MULTIPART_CASE",
-								"Multipart cases must be JSON objects.",
-								blockstate.path(),
-								"$.multipart[" + index + "]"
-							);
-							continue;
-						}
-						JsonObject part = partElement.getAsJsonObject();
-						String condition = part.has("when")
-							? describeCondition(part.get("when"))
-							: "always";
-						if (!part.has("apply")) {
-							addIssue(
-								ResolutionIssueSeverity.ERROR,
-								"MISSING_MULTIPART_APPLY",
-								"Multipart case has no apply entry.",
-								blockstate.path(),
-								"$.multipart[" + index + "]"
-							);
-							continue;
-						}
-						parseModelApplications(
-							blockstate.nodeId(),
-							part.get("apply"),
-							GraphEdgeType.HAS_MULTIPART_CASE,
-							"multipart " + (index + 1) + " when " + condition,
-							blockstate.path(),
-							"$.multipart[" + index + "].apply"
-						);
-					}
-				} else {
-					addIssue(
-						ResolutionIssueSeverity.ERROR,
-						"INVALID_MULTIPART",
-						"Blockstate multipart must be a JSON array.",
-						blockstate.path(),
-						"$.multipart"
-					);
-				}
-			}
-			if (!foundDefinition) {
+		private void traverseDefinition(
+			JsonElement element,
+			String ownerNodeId,
+			String branch,
+			String jsonPath,
+			int depth
+		) {
+			if (depth > MAX_DEFINITION_DEPTH) {
 				addIssue(
 					ResolutionIssueSeverity.ERROR,
-					"MISSING_BLOCKSTATE_DEFINITION",
-					"Blockstate contains neither variants nor multipart definitions.",
-					blockstate.path(),
-					"$"
-				);
-			}
-		}
-
-		private void parseModelApplications(
-			String ownerNodeId,
-			JsonElement applications,
-			GraphEdgeType edgeType,
-			String branchLabel,
-			ResourcePath ownerPath,
-			String jsonPath
-		) {
-			if (applications.isJsonArray()) {
-				JsonArray alternatives = applications.getAsJsonArray();
-				for (int index = 0; index < alternatives.size(); index++) {
-					parseModelApplication(
-						ownerNodeId,
-						alternatives.get(index),
-						edgeType,
-						branchLabel + " alternative " + (index + 1),
-						ownerPath,
-						jsonPath + "[" + index + "]"
-					);
-				}
-				return;
-			}
-			parseModelApplication(ownerNodeId, applications, edgeType, branchLabel, ownerPath, jsonPath);
-		}
-
-		private void parseModelApplication(
-			String ownerNodeId,
-			JsonElement application,
-			GraphEdgeType edgeType,
-			String branchLabel,
-			ResourcePath ownerPath,
-			String jsonPath
-		) {
-			if (!application.isJsonObject()) {
-				addIssue(
-					ResolutionIssueSeverity.ERROR,
-					"INVALID_MODEL_APPLICATION",
-					"Blockstate model application must be a JSON object.",
-					ownerPath,
+					"ITEM_DEFINITION_DEPTH_EXCEEDED",
+					"Item model definition exceeds the maximum supported nesting depth.",
+					itemDefinitionPath,
 					jsonPath
 				);
 				return;
 			}
-			JsonObject object = application.getAsJsonObject();
-			String rawModel = stringValue(object, "model");
-			if (rawModel == null) {
+			if (element == null || !element.isJsonObject()) {
+				addIssue(
+					ResolutionIssueSeverity.ERROR,
+					"INVALID_ITEM_MODEL_DEFINITION",
+					"Item model definition must be a JSON object.",
+					itemDefinitionPath,
+					jsonPath
+				);
+				return;
+			}
+			JsonObject definition = element.getAsJsonObject();
+			String type = normalizeType(stringValue(definition, "type"));
+			if (type == null) {
+				addIssue(
+					ResolutionIssueSeverity.WARNING,
+					"UNSUPPORTED_PREVIEW",
+					"Item model branch has no registered type; direct references were still inspected.",
+					itemDefinitionPath,
+					jsonPath
+				);
+				scanDirectReferences(definition, ownerNodeId, branch, jsonPath, depth + 1);
+				return;
+			}
+
+			switch (type) {
+				case "minecraft:model" -> traversePlainModel(
+					definition,
+					ownerNodeId,
+					branch,
+					jsonPath
+				);
+				case "minecraft:composite" -> traverseComposite(
+					definition,
+					ownerNodeId,
+					branch,
+					jsonPath,
+					depth
+				);
+				case "minecraft:condition" -> traverseCondition(
+					definition,
+					ownerNodeId,
+					branch,
+					jsonPath,
+					depth
+				);
+				case "minecraft:select" -> traverseSelect(
+					definition,
+					ownerNodeId,
+					branch,
+					jsonPath,
+					depth
+				);
+				case "minecraft:range_dispatch" -> traverseRange(
+					definition,
+					ownerNodeId,
+					branch,
+					jsonPath,
+					depth
+				);
+				case "minecraft:empty" -> addBuiltinBranch(
+					ownerNodeId,
+					"empty@" + jsonPath,
+					branch + " · empty",
+					DependencyClassification.OPTIONAL,
+					Map.of("definition_type", type)
+				);
+				case "minecraft:special" -> traverseSpecial(
+					definition,
+					ownerNodeId,
+					branch,
+					jsonPath
+				);
+				case "minecraft:bundle/selected_item" -> traverseDynamicBuiltin(
+					ownerNodeId,
+					type,
+					branch,
+					jsonPath
+				);
+				default -> traverseUnsupported(
+					definition,
+					ownerNodeId,
+					type,
+					branch,
+					jsonPath,
+					depth
+				);
+			}
+		}
+
+		private void traversePlainModel(
+			JsonObject definition,
+			String ownerNodeId,
+			String branch,
+			String jsonPath
+		) {
+			String modelValue = stringValue(definition, "model");
+			if (modelValue == null) {
 				addIssue(
 					ResolutionIssueSeverity.ERROR,
 					"MISSING_MODEL_REFERENCE",
-					"Blockstate model application has no model identifier.",
-					ownerPath,
+					"Plain item model branch has no render model identifier.",
+					itemDefinitionPath,
 					jsonPath + ".model"
 				);
 				return;
 			}
-			ResourceIdentifier modelIdentifier = parseIdentifier(
-				rawModel,
-				ownerPath,
+			ResourceIdentifier identifier = parseIdentifier(
+				modelValue,
+				itemDefinitionPath,
 				jsonPath + ".model"
 			);
-			if (modelIdentifier == null) {
+			if (identifier == null) {
 				return;
 			}
-			ModelResolution model = loadModel(modelIdentifier);
-			String label = describeApplication(branchLabel, object);
-			addEdge(ownerNodeId, model.nodeId(), edgeType, label);
+			ModelResolution model = loadModel(identifier);
+			addEdge(ownerNodeId, model.nodeId(), GraphEdgeType.SELECTS_MODEL, branch);
 			resolveModelTextures(model);
+		}
+
+		private void traverseComposite(
+			JsonObject definition,
+			String ownerNodeId,
+			String branch,
+			String jsonPath,
+			int depth
+		) {
+			JsonElement models = definition.get("models");
+			if (models == null || !models.isJsonArray()) {
+				addIssue(
+					ResolutionIssueSeverity.ERROR,
+					"INVALID_COMPOSITE_MODELS",
+					"Composite item model must contain a models array.",
+					itemDefinitionPath,
+					jsonPath + ".models"
+				);
+				return;
+			}
+			JsonArray array = models.getAsJsonArray();
+			for (int index = 0; index < array.size(); index++) {
+				traverseDefinition(
+					array.get(index),
+					ownerNodeId,
+					branch + " · composite layer " + (index + 1),
+					jsonPath + ".models[" + index + "]",
+					depth + 1
+				);
+			}
+		}
+
+		private void traverseCondition(
+			JsonObject definition,
+			String ownerNodeId,
+			String branch,
+			String jsonPath,
+			int depth
+		) {
+			String property = Objects.requireNonNullElse(
+				stringValue(definition, "property"),
+				"unknown property"
+			);
+			traverseRequiredBranch(
+				definition,
+				"on_false",
+				ownerNodeId,
+				branch + " · " + property + " = false",
+				jsonPath,
+				depth
+			);
+			traverseRequiredBranch(
+				definition,
+				"on_true",
+				ownerNodeId,
+				branch + " · " + property + " = true",
+				jsonPath,
+				depth
+			);
+		}
+
+		private void traverseSelect(
+			JsonObject definition,
+			String ownerNodeId,
+			String branch,
+			String jsonPath,
+			int depth
+		) {
+			String property = Objects.requireNonNullElse(
+				stringValue(definition, "property"),
+				"unknown property"
+			);
+			JsonElement cases = definition.get("cases");
+			if (cases == null || !cases.isJsonArray()) {
+				addIssue(
+					ResolutionIssueSeverity.ERROR,
+					"INVALID_SELECT_CASES",
+					"Select item model must contain a cases array.",
+					itemDefinitionPath,
+					jsonPath + ".cases"
+				);
+			} else {
+				JsonArray array = cases.getAsJsonArray();
+				for (int index = 0; index < array.size(); index++) {
+					JsonElement caseElement = array.get(index);
+					if (!caseElement.isJsonObject()) {
+						addIssue(
+							ResolutionIssueSeverity.ERROR,
+							"INVALID_SELECT_CASE",
+							"Select case must be a JSON object.",
+							itemDefinitionPath,
+							jsonPath + ".cases[" + index + "]"
+						);
+						continue;
+					}
+					JsonObject caseObject = caseElement.getAsJsonObject();
+					JsonElement model = caseObject.get("model");
+					if (model == null) {
+						addIssue(
+							ResolutionIssueSeverity.ERROR,
+							"MISSING_SELECT_MODEL",
+							"Select case has no model branch.",
+							itemDefinitionPath,
+							jsonPath + ".cases[" + index + "].model"
+						);
+						continue;
+					}
+					String when = describeValue(caseObject.get("when"));
+					traverseDefinition(
+						model,
+						ownerNodeId,
+						branch + " · " + property + " = " + when,
+						jsonPath + ".cases[" + index + "].model",
+						depth + 1
+					);
+				}
+			}
+			traverseOptionalBranch(
+				definition,
+				"fallback",
+				ownerNodeId,
+				branch + " · " + property + " fallback",
+				jsonPath,
+				depth
+			);
+		}
+
+		private void traverseRange(
+			JsonObject definition,
+			String ownerNodeId,
+			String branch,
+			String jsonPath,
+			int depth
+		) {
+			String property = Objects.requireNonNullElse(
+				stringValue(definition, "property"),
+				"unknown property"
+			);
+			JsonElement entries = definition.get("entries");
+			if (entries == null || !entries.isJsonArray()) {
+				addIssue(
+					ResolutionIssueSeverity.ERROR,
+					"INVALID_RANGE_ENTRIES",
+					"Range-dispatch item model must contain an entries array.",
+					itemDefinitionPath,
+					jsonPath + ".entries"
+				);
+			} else {
+				JsonArray array = entries.getAsJsonArray();
+				for (int index = 0; index < array.size(); index++) {
+					JsonElement entryElement = array.get(index);
+					if (!entryElement.isJsonObject()) {
+						addIssue(
+							ResolutionIssueSeverity.ERROR,
+							"INVALID_RANGE_ENTRY",
+							"Range entry must be a JSON object.",
+							itemDefinitionPath,
+							jsonPath + ".entries[" + index + "]"
+						);
+						continue;
+					}
+					JsonObject entry = entryElement.getAsJsonObject();
+					JsonElement model = entry.get("model");
+					if (model == null) {
+						addIssue(
+							ResolutionIssueSeverity.ERROR,
+							"MISSING_RANGE_MODEL",
+							"Range entry has no model branch.",
+							itemDefinitionPath,
+							jsonPath + ".entries[" + index + "].model"
+						);
+						continue;
+					}
+					String threshold = describeValue(entry.get("threshold"));
+					traverseDefinition(
+						model,
+						ownerNodeId,
+						branch + " · " + property + " ≥ " + threshold,
+						jsonPath + ".entries[" + index + "].model",
+						depth + 1
+					);
+				}
+			}
+			traverseOptionalBranch(
+				definition,
+				"fallback",
+				ownerNodeId,
+				branch + " · " + property + " fallback",
+				jsonPath,
+				depth
+			);
+		}
+
+		private void traverseSpecial(
+			JsonObject definition,
+			String ownerNodeId,
+			String branch,
+			String jsonPath
+		) {
+			String base = stringValue(definition, "base");
+			if (base != null) {
+				ResourceIdentifier identifier = parseIdentifier(
+					base,
+					itemDefinitionPath,
+					jsonPath + ".base"
+				);
+				if (identifier != null) {
+					ModelResolution model = loadModel(identifier);
+					addEdge(
+						ownerNodeId,
+						model.nodeId(),
+						GraphEdgeType.USES_MODEL,
+						branch + " · special renderer base"
+					);
+					resolveModelTextures(model);
+				}
+			}
+			JsonObject specialModel = definition.has("model") && definition.get("model").isJsonObject()
+				? definition.getAsJsonObject("model")
+				: null;
+			String specialType = specialModel == null
+				? "minecraft:unknown"
+				: Objects.requireNonNullElse(
+					normalizeType(stringValue(specialModel, "type")),
+					"minecraft:unknown"
+				);
+			markSpecial(ownerNodeId, specialType + "@" + jsonPath, branch + " · special renderer");
+			addIssue(
+				ResolutionIssueSeverity.WARNING,
+				"UNSUPPORTED_PREVIEW",
+				"Special item renderer " + specialType + " is preserved but cannot use standard model preview.",
+				itemDefinitionPath,
+				jsonPath
+			);
+		}
+
+		private void traverseDynamicBuiltin(
+			String ownerNodeId,
+			String type,
+			String branch,
+			String jsonPath
+		) {
+			addBuiltinBranch(
+				ownerNodeId,
+				type.substring("minecraft:".length()) + "@" + jsonPath,
+				branch + " · dynamic selected item",
+				DependencyClassification.UNSUPPORTED_SPECIAL_CASE,
+				Map.of("definition_type", type)
+			);
+			addIssue(
+				ResolutionIssueSeverity.WARNING,
+				"UNSUPPORTED_PREVIEW",
+				"Dynamic item branch " + type + " is preserved for diagnostics.",
+				itemDefinitionPath,
+				jsonPath
+			);
+		}
+
+		private void traverseUnsupported(
+			JsonObject definition,
+			String ownerNodeId,
+			String type,
+			String branch,
+			String jsonPath,
+			int depth
+		) {
+			AssetGraphNode unknown = node(
+				GraphNodeType.UNKNOWN_RESOURCE,
+				root.namespace(),
+				type + "@" + jsonPath,
+				"",
+				source.layer(),
+				DependencyClassification.UNSUPPORTED_SPECIAL_CASE,
+				Map.of(
+					"definition_type", type,
+					"raw_json", definition.toString()
+				)
+			);
+			addNode(unknown);
+			addEdge(ownerNodeId, unknown.id(), GraphEdgeType.SELECTS_MODEL, branch + " · unsupported");
+			addIssue(
+				ResolutionIssueSeverity.WARNING,
+				"UNSUPPORTED_PREVIEW",
+				"Unsupported item model type " + type + "; direct references were still inspected.",
+				itemDefinitionPath,
+				jsonPath
+			);
+			scanDirectReferences(definition, unknown.id(), branch, jsonPath, depth + 1);
+		}
+
+		private void scanDirectReferences(
+			JsonElement element,
+			String ownerNodeId,
+			String branch,
+			String jsonPath,
+			int depth
+		) {
+			if (depth > MAX_DEFINITION_DEPTH) {
+				return;
+			}
+			if (element.isJsonObject()) {
+				JsonObject object = element.getAsJsonObject();
+				for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+					String childPath = jsonPath + "." + entry.getKey();
+					JsonElement value = entry.getValue();
+					if ((entry.getKey().equals("model") || entry.getKey().equals("base"))
+						&& value.isJsonPrimitive()
+						&& value.getAsJsonPrimitive().isString()) {
+						ResourceIdentifier identifier = parseIdentifier(
+							value.getAsString(),
+							itemDefinitionPath,
+							childPath
+						);
+						if (identifier != null) {
+							ModelResolution model = loadModel(identifier);
+							addEdge(
+								ownerNodeId,
+								model.nodeId(),
+								GraphEdgeType.USES_MODEL,
+								branch + " · discovered reference"
+							);
+							resolveModelTextures(model);
+						}
+					} else if (value.isJsonObject()
+						&& stringValue(value.getAsJsonObject(), "type") != null) {
+						traverseDefinition(
+							value,
+							ownerNodeId,
+							branch + " · discovered branch",
+							childPath,
+							depth + 1
+						);
+					} else {
+						scanDirectReferences(value, ownerNodeId, branch, childPath, depth + 1);
+					}
+				}
+			} else if (element.isJsonArray()) {
+				JsonArray array = element.getAsJsonArray();
+				for (int index = 0; index < array.size(); index++) {
+					scanDirectReferences(
+						array.get(index),
+						ownerNodeId,
+						branch,
+						jsonPath + "[" + index + "]",
+						depth + 1
+					);
+				}
+			}
+		}
+
+		private void traverseRequiredBranch(
+			JsonObject definition,
+			String field,
+			String ownerNodeId,
+			String branch,
+			String jsonPath,
+			int depth
+		) {
+			JsonElement value = definition.get(field);
+			if (value == null) {
+				addIssue(
+					ResolutionIssueSeverity.ERROR,
+					"MISSING_CONDITION_BRANCH",
+					"Condition item model has no " + field + " branch.",
+					itemDefinitionPath,
+					jsonPath + "." + field
+				);
+				return;
+			}
+			traverseDefinition(value, ownerNodeId, branch, jsonPath + "." + field, depth + 1);
+		}
+
+		private void traverseOptionalBranch(
+			JsonObject definition,
+			String field,
+			String ownerNodeId,
+			String branch,
+			String jsonPath,
+			int depth
+		) {
+			JsonElement value = definition.get(field);
+			if (value != null) {
+				traverseDefinition(value, ownerNodeId, branch, jsonPath + "." + field, depth + 1);
+			}
+		}
+
+		private void addBuiltinBranch(
+			String ownerNodeId,
+			String logicalPath,
+			String label,
+			DependencyClassification classification,
+			Map<String, String> attributes
+		) {
+			AssetGraphNode builtin = node(
+				GraphNodeType.BUILTIN_MODEL,
+				root.namespace(),
+				logicalPath,
+				"",
+				source.layer(),
+				classification,
+				attributes
+			);
+			addNode(builtin);
+			addEdge(ownerNodeId, builtin.id(), GraphEdgeType.SELECTS_MODEL, label);
 		}
 
 		private ModelResolution loadModel(ResourceIdentifier identifier) {
@@ -283,13 +683,14 @@ public final class BlockDependencyResolver {
 					"$.parent",
 					resolvingModels.stream().map(ResourceIdentifier::toString).toList()
 				);
-				String nodeId = modelNode(
+				AssetGraphNode cycleNode = modelNode(
 					identifier,
 					source.layer(),
 					DependencyClassification.REQUIRED_TRANSITIVE,
 					Map.of()
-				).id();
-				return new ModelResolution(identifier, nodeId, Map.of(), Set.of(), false, false);
+				);
+				addNode(cycleNode);
+				return new ModelResolution(identifier, cycleNode.id(), Map.of(), Set.of(), false, false);
 			}
 
 			resolvingModels.add(identifier);
@@ -309,9 +710,6 @@ public final class BlockDependencyResolver {
 					);
 					addNode(builtin);
 					boolean special = identifier.path().equals("builtin/entity");
-					if (special) {
-						markSpecial(builtin.id(), identifier.toString(), "Built-in entity renderer");
-					}
 					ModelResolution result = new ModelResolution(
 						identifier,
 						builtin.id(),
@@ -422,6 +820,10 @@ public final class BlockDependencyResolver {
 			if (effectiveTextures.containsKey("particle")) {
 				usedTextureReferences.add("#particle");
 			}
+			effectiveTextures.keySet().stream()
+				.filter(key -> key.matches("layer\\d+"))
+				.map(key -> "#" + key)
+				.forEach(usedTextureReferences::add);
 
 			resolvingModels.remove(identifier);
 			ModelResolution result = new ModelResolution(
@@ -434,7 +836,7 @@ public final class BlockDependencyResolver {
 			);
 			modelCache.put(identifier, result);
 			if (special) {
-				markSpecial(modelNode.id(), identifier.toString(), "Inherited special renderer");
+				markSpecial(modelNode.id(), identifier + "#special_parent", "Inherited special renderer");
 			}
 			return result;
 		}
@@ -442,33 +844,32 @@ public final class BlockDependencyResolver {
 		private void collectElementTextureReferences(
 			JsonElement elements,
 			Set<String> destination,
-			ResourcePath modelPath
+			ResourcePath path
 		) {
 			if (!elements.isJsonArray()) {
 				addIssue(
 					ResolutionIssueSeverity.ERROR,
 					"INVALID_MODEL_ELEMENTS",
 					"Model elements must be a JSON array.",
-					modelPath,
+					path,
 					"$.elements"
 				);
 				return;
 			}
 			JsonArray array = elements.getAsJsonArray();
-			for (int elementIndex = 0; elementIndex < array.size(); elementIndex++) {
-				JsonElement element = array.get(elementIndex);
+			for (JsonElement element : array) {
 				if (!element.isJsonObject()) {
 					continue;
 				}
-				JsonElement facesElement = element.getAsJsonObject().get("faces");
-				if (facesElement == null || !facesElement.isJsonObject()) {
+				JsonElement faces = element.getAsJsonObject().get("faces");
+				if (faces == null || !faces.isJsonObject()) {
 					continue;
 				}
-				for (Map.Entry<String, JsonElement> face : facesElement.getAsJsonObject().entrySet()) {
-					if (!face.getValue().isJsonObject()) {
+				for (JsonElement face : faces.getAsJsonObject().asMap().values()) {
+					if (!face.isJsonObject()) {
 						continue;
 					}
-					String texture = stringValue(face.getValue().getAsJsonObject(), "texture");
+					String texture = stringValue(face.getAsJsonObject(), "texture");
 					if (texture != null) {
 						destination.add(texture);
 					}
@@ -480,11 +881,21 @@ public final class BlockDependencyResolver {
 			if (!resolvedModelTextures.add(model.nodeId())) {
 				return;
 			}
-			if (!model.hasGeometry() && !model.specialRenderer()) {
+			if (!model.hasGeometry()
+				&& model.usedTextureReferences().isEmpty()
+				&& !model.specialRenderer()
+				&& !model.identifier().path().startsWith("builtin/")) {
 				markSpecial(
 					model.nodeId(),
 					model.identifier() + "#no_standard_geometry",
-					"Model has no standard JSON geometry"
+					"Model has no standard geometry or generated layers"
+				);
+				addIssue(
+					ResolutionIssueSeverity.WARNING,
+					"UNSUPPORTED_PREVIEW",
+					"Render model " + model.identifier() + " has no standard geometry or generated layers.",
+					modelPath(model.identifier()),
+					"$"
 				);
 			}
 			for (String reference : model.usedTextureReferences()) {
@@ -497,7 +908,7 @@ public final class BlockDependencyResolver {
 				if (texture == null) {
 					continue;
 				}
-				String textureNodeId = addTexture(texture.identifier(), model.identifier());
+				String textureNodeId = addTexture(texture.identifier());
 				if (reference.startsWith("#")) {
 					addEdge(
 						model.nodeId(),
@@ -527,7 +938,12 @@ public final class BlockDependencyResolver {
 			}
 			String variable = reference.substring(1);
 			if (variable.isEmpty()) {
-				addTextureIssue("UNDEFINED_TEXTURE_VARIABLE", "Texture variable name is empty.", model, variableChain);
+				addTextureIssue(
+					"UNDEFINED_TEXTURE_VARIABLE",
+					"Texture variable name is empty.",
+					model,
+					variableChain
+				);
 				return null;
 			}
 			if (!variableChain.add(variable)) {
@@ -559,7 +975,7 @@ public final class BlockDependencyResolver {
 			);
 		}
 
-		private String addTexture(ResourceIdentifier identifier, ResourceIdentifier modelIdentifier) {
+		private String addTexture(ResourceIdentifier identifier) {
 			ResourcePath texturePath = new ResourcePath(
 				identifier.namespace(),
 				"textures/" + identifier.path() + ".png"
@@ -615,7 +1031,8 @@ public final class BlockDependencyResolver {
 				addEdge(textureNode.id(), metadataNode.id(), GraphEdgeType.USES_METADATA, "animation metadata");
 			}
 
-			String atlas = identifier.path().startsWith("item/") ? "items" : "blocks";
+			String atlas = atlasFor(identifier);
+			usedAtlases.add(atlas);
 			String atlasNodeId = ensureAtlas(atlas);
 			addEdge(textureNode.id(), atlasNodeId, GraphEdgeType.REQUIRES_ATLAS, atlas + " atlas");
 			return textureNode.id();
@@ -628,7 +1045,7 @@ public final class BlockDependencyResolver {
 			}
 			ResourcePath atlasPath = new ResourcePath(DEFAULT_NAMESPACE, "atlases/" + atlas + ".json");
 			Optional<ResourceData> data = read(atlasPath);
-			AssetGraphNode node = node(
+			AssetGraphNode atlasNode = node(
 				GraphNodeType.ATLAS_FILE,
 				DEFAULT_NAMESPACE,
 				atlas,
@@ -639,7 +1056,7 @@ public final class BlockDependencyResolver {
 					: DependencyClassification.MISSING,
 				Map.of("atlas", atlas)
 			);
-			addNode(node);
+			addNode(atlasNode);
 			if (data.isEmpty()) {
 				addIssue(
 					ResolutionIssueSeverity.WARNING,
@@ -649,47 +1066,19 @@ public final class BlockDependencyResolver {
 					"$"
 				);
 			}
-			atlasNodes.put(atlas, node.id());
-			return node.id();
+			atlasNodes.put(atlas, atlasNode.id());
+			return atlasNode.id();
 		}
 
-		private void resolveBlockItemRepresentation() {
-			AssetResolutionResult itemResult = itemDependencyResolver.resolve(
-				new AssetKey(AssetKind.ITEM, root.namespace(), root.path())
-			);
-			String itemRootId = itemResult.graph().rootNodeId();
-			for (AssetGraphNode itemNode : itemResult.graph().nodes().values()) {
-				if (!itemNode.id().equals(itemRootId)) {
-					addNode(itemNode);
-				}
-			}
-			for (AssetGraphEdge itemEdge : itemResult.graph().edges()) {
-				if (itemEdge.fromNodeId().equals(itemRootId)) {
-					if (itemEdge.type() == GraphEdgeType.HAS_CLIENT_ITEM) {
-						addEdge(
-							rootNodeId,
-							itemEdge.toNodeId(),
-							GraphEdgeType.HAS_CLIENT_ITEM,
-							"inventory appearance"
-						);
-					}
-				} else {
-					edges.add(itemEdge);
-				}
-			}
-			for (ResolutionIssue issue : itemResult.issues()) {
-				if (issue.code().equals("MISSING_CLIENT_ITEM")) {
-					issues.add(new ResolutionIssue(
-						ResolutionIssueSeverity.INFO,
-						issue.code(),
-						issue.message(),
-						issue.packPath(),
-						issue.jsonPath(),
-						issue.dependencyChain()
-					));
-				} else {
-					issues.add(issue);
-				}
+		private void validateAtlasConstraints() {
+			if (usedAtlases.contains("items") && usedAtlases.contains("blocks")) {
+				addIssue(
+					ResolutionIssueSeverity.ERROR,
+					"MIXED_ITEM_ATLASES",
+					"Item branches resolve textures from both item and block atlases.",
+					itemDefinitionPath,
+					"$.model"
+				);
 			}
 		}
 
@@ -733,7 +1122,7 @@ public final class BlockDependencyResolver {
 					path,
 					"$"
 				);
-				return new LoadedJson(missing.id(), path, null);
+				return new LoadedJson(missing.id(), null);
 			}
 			JsonObject json = parseJsonObject(resource.get(), path, "INVALID_JSON");
 			AssetGraphNode loaded = node(
@@ -746,7 +1135,7 @@ public final class BlockDependencyResolver {
 				json == null ? Map.of() : jsonAttributes(json)
 			);
 			addNode(loaded);
-			return new LoadedJson(loaded.id(), path, json);
+			return new LoadedJson(loaded.id(), json);
 		}
 
 		private JsonObject parseJsonObject(ResourceData data, ResourcePath path, String code) {
@@ -902,44 +1291,30 @@ public final class BlockDependencyResolver {
 		}
 	}
 
-	private static String describeApplication(String branchLabel, JsonObject application) {
-		List<String> details = new ArrayList<>();
-		details.add(branchLabel);
-		for (String rotation : List.of("x", "y", "z")) {
-			if (application.has(rotation) && application.get(rotation).isJsonPrimitive()) {
-				details.add(rotation + "=" + application.get(rotation).getAsString());
-			}
+	private static String normalizeType(String type) {
+		if (type == null || type.isBlank()) {
+			return null;
 		}
-		if (application.has("uvlock") && application.get("uvlock").isJsonPrimitive()) {
-			details.add("uvlock=" + application.get("uvlock").getAsString());
-		}
-		if (application.has("weight") && application.get("weight").isJsonPrimitive()) {
-			details.add("weight=" + application.get("weight").getAsString());
-		}
-		return String.join("; ", details);
+		return type.contains(":") ? type : DEFAULT_NAMESPACE + ":" + type;
 	}
 
-	private static String describeCondition(JsonElement condition) {
-		if (!condition.isJsonObject()) {
-			return condition.toString();
-		}
-		List<String> clauses = new ArrayList<>();
-		for (Map.Entry<String, JsonElement> entry : condition.getAsJsonObject().entrySet()) {
-			if ((entry.getKey().equals("OR") || entry.getKey().equals("AND"))
-				&& entry.getValue().isJsonArray()) {
-				List<String> nested = new ArrayList<>();
-				for (JsonElement child : entry.getValue().getAsJsonArray()) {
-					nested.add(describeCondition(child));
-				}
-				clauses.add(entry.getKey() + "(" + String.join(", ", nested) + ")");
-			} else {
-				clauses.add(entry.getKey() + "=" + primitiveDescription(entry.getValue()));
-			}
-		}
-		return String.join(" AND ", clauses);
+	private static String atlasFor(ResourceIdentifier texture) {
+		return texture.path().startsWith("item/") || texture.path().startsWith("trims/items/")
+			? "items"
+			: "blocks";
 	}
 
-	private static String primitiveDescription(JsonElement value) {
+	private static String describeValue(JsonElement value) {
+		if (value == null) {
+			return "unspecified";
+		}
+		if (value.isJsonArray()) {
+			List<String> values = new ArrayList<>();
+			for (JsonElement entry : value.getAsJsonArray()) {
+				values.add(describeValue(entry));
+			}
+			return String.join(" | ", values);
+		}
 		return value.isJsonPrimitive() ? value.getAsString() : value.toString();
 	}
 
@@ -966,7 +1341,7 @@ public final class BlockDependencyResolver {
 		return result;
 	}
 
-	private record LoadedJson(String nodeId, ResourcePath path, JsonObject json) {
+	private record LoadedJson(String nodeId, JsonObject json) {
 	}
 
 	private record ModelResolution(

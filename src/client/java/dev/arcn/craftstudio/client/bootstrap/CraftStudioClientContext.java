@@ -9,6 +9,7 @@ import dev.arcn.craftstudio.catalog.infrastructure.minecraft.MinecraftVanillaCat
 import dev.arcn.craftstudio.graph.domain.AssetKey;
 import dev.arcn.craftstudio.graph.domain.AssetResolutionResult;
 import dev.arcn.craftstudio.graph.resolver.BlockDependencyResolver;
+import dev.arcn.craftstudio.graph.resolver.ItemDependencyResolver;
 import dev.arcn.craftstudio.platform.filesystem.AtomicFileWriter;
 import dev.arcn.craftstudio.platform.paths.WorkspacePaths;
 import dev.arcn.craftstudio.project.application.ProjectService;
@@ -48,8 +49,11 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private final MinecraftVanillaCatalogAdapter catalogAdapter;
 	private final VanillaAssetSource vanillaAssetSource;
 	private final BlockDependencyResolver blockDependencyResolver;
+	private final ItemDependencyResolver itemDependencyResolver;
 	private final ExecutorService backgroundExecutor;
 	private final ConcurrentHashMap<String, CompletableFuture<AssetResolutionResult>> blockResolutionCache =
+		new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<String, CompletableFuture<AssetResolutionResult>> itemResolutionCache =
 		new ConcurrentHashMap<>();
 	private final AtomicLong recentProjectsRevision = new AtomicLong();
 	private final AtomicLong catalogRevision = new AtomicLong();
@@ -68,7 +72,8 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		RecentProjectRegistry recentProjectRegistry,
 		MinecraftVanillaCatalogAdapter catalogAdapter,
 		VanillaAssetSource vanillaAssetSource,
-		BlockDependencyResolver blockDependencyResolver
+		BlockDependencyResolver blockDependencyResolver,
+		ItemDependencyResolver itemDependencyResolver
 	) {
 		this.workspacePaths = workspacePaths;
 		this.projectService = projectService;
@@ -76,6 +81,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		this.catalogAdapter = catalogAdapter;
 		this.vanillaAssetSource = vanillaAssetSource;
 		this.blockDependencyResolver = blockDependencyResolver;
+		this.itemDependencyResolver = itemDependencyResolver;
 		this.backgroundExecutor = Executors.newFixedThreadPool(2, Thread.ofPlatform()
 			.name("craftstudio-worker-", 0)
 			.factory());
@@ -116,7 +122,8 @@ public final class CraftStudioClientContext implements AutoCloseable {
 			recentProjects,
 			new MinecraftVanillaCatalogAdapter(),
 			vanillaAssets,
-			new BlockDependencyResolver(vanillaAssets, target.minecraftVersion())
+			new BlockDependencyResolver(vanillaAssets, target.minecraftVersion()),
+			new ItemDependencyResolver(vanillaAssets, target.minecraftVersion())
 		);
 	}
 
@@ -238,6 +245,42 @@ public final class CraftStudioClientContext implements AutoCloseable {
 				} else {
 					CraftStudio.LOGGER.info(
 						"Block resolved asset_id={} node_count={} edge_count={} issue_count={} missing_count={} operation=block_resolve",
+						asset.identifier(),
+						result.stats().nodeCount(),
+						result.stats().edgeCount(),
+						result.stats().issueCount(),
+						result.stats().missingCount()
+					);
+				}
+			});
+			return future;
+		});
+	}
+
+	public CompletableFuture<AssetResolutionResult> resolveItem(CatalogAsset asset) {
+		if (asset.kind() != AssetKind.ITEM) {
+			return CompletableFuture.failedFuture(
+				new IllegalArgumentException("Only item assets can use the item dependency resolver.")
+			);
+		}
+		String cacheKey = vanillaAssetSource.revision() + "|" + asset.identifier();
+		return itemResolutionCache.computeIfAbsent(cacheKey, ignored -> {
+			AssetKey key = new AssetKey(asset.kind(), asset.namespace(), asset.path());
+			CompletableFuture<AssetResolutionResult> future = CompletableFuture.supplyAsync(
+				() -> itemDependencyResolver.resolve(key),
+				backgroundExecutor
+			);
+			future.whenComplete((result, error) -> {
+				if (error != null) {
+					itemResolutionCache.remove(cacheKey, future);
+					CraftStudio.LOGGER.error(
+						"Item resolution failed asset_id={} operation=item_resolve",
+						asset.identifier(),
+						error
+					);
+				} else {
+					CraftStudio.LOGGER.info(
+						"Item resolved asset_id={} node_count={} edge_count={} issue_count={} missing_count={} operation=item_resolve",
 						asset.identifier(),
 						result.stats().nodeCount(),
 						result.stats().edgeCount(),
