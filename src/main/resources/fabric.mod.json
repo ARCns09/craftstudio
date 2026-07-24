@@ -3,17 +3,13 @@
 	"id": "craftstudio",
 	"version": "${version}",
 	"name": "CraftStudio",
-	"description": "This is an example description! Tell everyone what your mod is about!",
+	"description": "A visual IDE for creating Minecraft resource packs.",
 	"authors": [
-		"Me!"
+		"ARCn09"
 	],
-	"contact": {
-		"homepage": "https://fabricmc.net/",
-		"sources": "https://github.com/FabricMC/fabric-example-mod"
-	},
 	"license": "CC0-1.0",
 	"icon": "assets/craftstudio/icon.png",
-	"environment": "*",
+	"environment": "client",
 	"entrypoints": {
 		"main": [
 			"dev.arcn.craftstudio.CraftStudio"
@@ -22,13 +18,6 @@
 			"dev.arcn.craftstudio.client.CraftStudioClient"
 		]
 	},
-	"mixins": [
-		"craftstudio.mixins.json",
-		{
-			"config": "craftstudio.client.mixins.json",
-			"environment": "client"
-		}
-	],
 	"depends": {
 		"fabricloader": ">=0.19.3",
 		"minecraft": "~1.21.11",
