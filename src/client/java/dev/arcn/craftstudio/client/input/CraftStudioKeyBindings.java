@@ -1,6 +1,7 @@
 package dev.arcn.craftstudio.client.input;
 
 import dev.arcn.craftstudio.CraftStudio;
+import dev.arcn.craftstudio.client.bootstrap.CraftStudioClientContext;
 import dev.arcn.craftstudio.ui.screen.CraftStudioHomeScreen;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
@@ -25,11 +26,11 @@ public final class CraftStudioKeyBindings {
 	private CraftStudioKeyBindings() {
 	}
 
-	public static void register() {
+	public static void register(CraftStudioClientContext context) {
 		ClientTickEvents.END_CLIENT_TICK.register(client -> {
 			while (OPEN_CRAFTSTUDIO.wasPressed()) {
 				if (!(client.currentScreen instanceof CraftStudioHomeScreen)) {
-					client.setScreen(new CraftStudioHomeScreen(client.currentScreen));
+					client.setScreen(new CraftStudioHomeScreen(context, client.currentScreen));
 				}
 			}
 		});

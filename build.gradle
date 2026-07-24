@@ -48,6 +48,20 @@ tasks.withType(JavaCompile).configureEach {
 	it.options.release = 21
 }
 
+tasks.register("projectFoundationTest", JavaExec) {
+	group = "verification"
+	description = "Runs dependency-free project foundation tests."
+	dependsOn testClasses
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = "dev.arcn.craftstudio.project.ProjectFoundationTest"
+}
+
+tasks.named("test") {
+	failOnNoDiscoveredTests = false
+}
+
+check.dependsOn projectFoundationTest
+
 java {
 	// Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task
 	// if it is present.
