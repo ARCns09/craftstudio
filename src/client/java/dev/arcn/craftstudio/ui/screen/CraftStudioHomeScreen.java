@@ -4,7 +4,9 @@ import dev.arcn.craftstudio.client.bootstrap.CraftStudioClientContext;
 import dev.arcn.craftstudio.client.bootstrap.CraftStudioClientContext.RecentProjectView;
 import dev.arcn.craftstudio.project.domain.CraftStudioProject;
 import dev.arcn.craftstudio.ui.theme.CraftStudioTheme;
+import dev.arcn.craftstudio.ui.widget.ScrollableActionListWidget;
 import java.nio.file.Path;
+import java.util.List;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
@@ -23,6 +25,8 @@ public final class CraftStudioHomeScreen extends Screen {
 	private int statusColor = CraftStudioTheme.TEXT_MUTED;
 	private boolean busy;
 	private long recentProjectsRevision;
+	private double recentScrollY;
+	private ScrollableActionListWidget<RecentProjectView> recentList;
 
 	public CraftStudioHomeScreen(CraftStudioClientContext context, Screen parent) {
 		super(TITLE);
@@ -32,11 +36,14 @@ public final class CraftStudioHomeScreen extends Screen {
 
 	@Override
 	protected void init() {
+		if (recentList != null) {
+			recentScrollY = recentList.getScrollY();
+		}
 		int panelX = getPanelX();
 		int panelY = getPanelY();
 		int contentX = panelX + CraftStudioTheme.SPACE_4;
 		int contentWidth = getPanelWidth() - CraftStudioTheme.SPACE_4 * 2;
-		int buttonY = panelY + 70;
+		int buttonY = getButtonY();
 		int halfButtonWidth = (contentWidth - CraftStudioTheme.SPACE_2) / 2;
 
 		ButtonWidget newProjectButton = ButtonWidget.builder(
@@ -82,22 +89,32 @@ public final class CraftStudioHomeScreen extends Screen {
 		closeButton.active = !busy;
 		addDrawableChild(closeButton);
 
-		int recentY = buttonY + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 3 + 36;
-		int availableHeight = panelY + getPanelHeight() - CraftStudioTheme.SPACE_4 - recentY;
-		int maximumVisible = Math.min(3, Math.max(0, availableHeight / 24));
-		int index = 0;
-		for (RecentProjectView recentProject : context.recentProjects()) {
-			if (index >= maximumVisible) {
-				break;
-			}
-			ButtonWidget recentButton = ButtonWidget.builder(
+		int recentHeaderY = getRecentHeaderY();
+		int recentY = recentHeaderY + 14;
+		int listBottom = panelY + getPanelHeight()
+			- (statusMessage == null ? CraftStudioTheme.SPACE_4 : 22);
+		List<ScrollableActionListWidget.Row<RecentProjectView>> recentRows = context.recentProjects()
+			.stream()
+			.map(recentProject -> new ScrollableActionListWidget.Row<>(
+				recentProject,
 				recentProjectLabel(recentProject),
-				button -> openRecentProject(recentProject)
-			).dimensions(contentX, recentY + index * 24, contentWidth, BUTTON_HEIGHT).build();
-			recentButton.active = !busy && recentProject.available();
-			addDrawableChild(recentButton);
-			index++;
-		}
+				!busy && recentProject.available()
+			))
+			.toList();
+		recentList = new ScrollableActionListWidget<>(
+			contentX,
+			recentY,
+			contentWidth,
+			Math.max(1, listBottom - recentY),
+			24,
+			Text.translatable("screen.craftstudio.home.recent_projects"),
+			textRenderer,
+			recentRows,
+			this::openRecentProject
+		);
+		recentList.active = !busy;
+		recentList.setScrollY(recentScrollY);
+		addDrawableChild(recentList);
 		recentProjectsRevision = context.recentProjectsRevision();
 	}
 
@@ -133,14 +150,14 @@ public final class CraftStudioHomeScreen extends Screen {
 			textRenderer,
 			title,
 			width / 2,
-			panelY + CraftStudioTheme.SPACE_4,
+			panelY + getHeaderTop(),
 			CraftStudioTheme.TEXT_PRIMARY
 		);
 		drawContext.drawCenteredTextWithShadow(
 			textRenderer,
 			Text.translatable("screen.craftstudio.home.subtitle"),
 			width / 2,
-			panelY + CraftStudioTheme.SPACE_4 + 20,
+			panelY + getHeaderTop() + (height < 240 ? 12 : 20),
 			CraftStudioTheme.TEXT_MUTED
 		);
 
@@ -153,12 +170,12 @@ public final class CraftStudioHomeScreen extends Screen {
 					activeProject.metadata().name()
 				),
 				width / 2,
-				panelY + CraftStudioTheme.SPACE_4 + 38,
+				panelY + (height < 240 ? 30 : CraftStudioTheme.SPACE_4 + 38),
 				CraftStudioTheme.SUCCESS
 			);
 		}
 
-		int recentHeaderY = panelY + 172;
+		int recentHeaderY = getRecentHeaderY();
 		drawContext.drawTextWithShadow(
 			textRenderer,
 			Text.translatable("screen.craftstudio.home.recent_projects"),
@@ -166,6 +183,7 @@ public final class CraftStudioHomeScreen extends Screen {
 			recentHeaderY,
 			CraftStudioTheme.TEXT_PRIMARY
 		);
+		super.render(drawContext, mouseX, mouseY, deltaTicks);
 		if (context.recentProjects().isEmpty()) {
 			drawContext.drawTextWithShadow(
 				textRenderer,
@@ -184,8 +202,6 @@ public final class CraftStudioHomeScreen extends Screen {
 				statusColor
 			);
 		}
-
-		super.render(drawContext, mouseX, mouseY, deltaTicks);
 	}
 
 	@Override
@@ -240,7 +256,7 @@ public final class CraftStudioHomeScreen extends Screen {
 	}
 
 	private int getPanelHeight() {
-		return Math.min(PANEL_MAX_HEIGHT, height - CraftStudioTheme.SPACE_4 * 2);
+		return Math.max(1, Math.min(PANEL_MAX_HEIGHT, height - CraftStudioTheme.SPACE_2 * 2));
 	}
 
 	private int getPanelX() {
@@ -249,5 +265,17 @@ public final class CraftStudioHomeScreen extends Screen {
 
 	private int getPanelY() {
 		return (height - getPanelHeight()) / 2;
+	}
+
+	private int getHeaderTop() {
+		return height < 240 ? CraftStudioTheme.SPACE_2 : CraftStudioTheme.SPACE_4;
+	}
+
+	private int getButtonY() {
+		return getPanelY() + (height < 240 ? 46 : 70);
+	}
+
+	private int getRecentHeaderY() {
+		return getButtonY() + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 3 + 8;
 	}
 }

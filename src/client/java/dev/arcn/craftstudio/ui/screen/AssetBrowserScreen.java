@@ -10,6 +10,7 @@ import dev.arcn.craftstudio.catalog.domain.CatalogAsset;
 import dev.arcn.craftstudio.client.bootstrap.CraftStudioClientContext;
 import dev.arcn.craftstudio.client.bootstrap.CraftStudioClientContext.CatalogState;
 import dev.arcn.craftstudio.ui.theme.CraftStudioTheme;
+import dev.arcn.craftstudio.ui.widget.ScrollableActionListWidget;
 import java.util.ArrayList;
 import java.util.List;
 import net.minecraft.client.gui.DrawContext;
@@ -31,11 +32,11 @@ public final class AssetBrowserScreen extends Screen {
 	private CatalogCategory category = CatalogCategory.ALL;
 	private CatalogSort sort = CatalogSort.NAME;
 	private String namespace = CatalogQuery.ALL_NAMESPACES;
-	private int offset;
-	private int pageSize = 1;
+	private double listScrollY;
 	private long catalogRevision = -1;
 	private CatalogSearchResult searchResult = new CatalogSearchResult(List.of(), 0, 0);
 	private TextFieldWidget searchField;
+	private ScrollableActionListWidget<CatalogAsset> assetList;
 
 	public AssetBrowserScreen(CraftStudioClientContext context, Screen parent) {
 		super(TITLE);
@@ -45,12 +46,16 @@ public final class AssetBrowserScreen extends Screen {
 
 	@Override
 	protected void init() {
+		if (assetList != null) {
+			listScrollY = assetList.getScrollY();
+		}
 		context.startCatalogIndex();
 		CatalogState state = context.catalogState();
 		catalogRevision = state.revision();
 
-		int contentX = MARGIN;
-		int contentWidth = width - MARGIN * 2;
+		int margin = getMargin();
+		int contentX = margin;
+		int contentWidth = width - margin * 2;
 		int searchY = 34;
 		searchField = new TextFieldWidget(
 			textRenderer,
@@ -65,19 +70,22 @@ public final class AssetBrowserScreen extends Screen {
 		searchField.setText(searchText);
 		searchField.setChangedListener(value -> {
 			searchText = value;
-			offset = 0;
+			resetListScroll();
 			clearAndInit();
 		});
 		addDrawableChild(searchField);
 
 		int filterY = searchY + 28;
 		int filterGap = CraftStudioTheme.SPACE_2;
-		int filterWidth = (contentWidth - filterGap * 2) / 3;
+		boolean compactFilters = contentWidth < 330;
+		int filterWidth = compactFilters
+			? (contentWidth - filterGap) / 2
+			: (contentWidth - filterGap * 2) / 3;
 		ButtonWidget categoryButton = ButtonWidget.builder(
 			categoryLabel(),
 			button -> {
 				category = category.next();
-				offset = 0;
+				resetListScroll();
 				clearAndInit();
 			}
 		).dimensions(contentX, filterY, filterWidth, BUTTON_HEIGHT).build();
@@ -88,7 +96,7 @@ public final class AssetBrowserScreen extends Screen {
 			namespaceLabel(),
 			button -> {
 				namespace = nextNamespace(state.index());
-				offset = 0;
+				resetListScroll();
 				clearAndInit();
 			}
 		).dimensions(
@@ -104,77 +112,51 @@ public final class AssetBrowserScreen extends Screen {
 			sortLabel(),
 			button -> {
 				sort = sort.next();
-				offset = 0;
+				resetListScroll();
 				clearAndInit();
 			}
 		).dimensions(
-			contentX + (filterWidth + filterGap) * 2,
-			filterY,
-			filterWidth,
+			compactFilters ? contentX : contentX + (filterWidth + filterGap) * 2,
+			compactFilters ? filterY + BUTTON_HEIGHT + filterGap : filterY,
+			compactFilters ? contentWidth : filterWidth,
 			BUTTON_HEIGHT
 		).build();
 		sortButton.active = state.ready();
 		addDrawableChild(sortButton);
 
-		int rowsY = filterY + 30;
-		int footerY = height - MARGIN - BUTTON_HEIGHT;
-		pageSize = Math.max(1, (footerY - rowsY - CraftStudioTheme.SPACE_2) / ROW_HEIGHT);
+		int rowsY = filterY + (compactFilters ? 54 : 30);
+		int footerY = height - margin - BUTTON_HEIGHT;
+		int statusY = footerY - 12;
 		if (state.ready()) {
 			searchResult = search(state.index());
-			if (searchResult.assets().isEmpty() && searchResult.totalCount() > 0 && offset > 0) {
-				offset = Math.max(0, ((searchResult.totalCount() - 1) / pageSize) * pageSize);
-				searchResult = search(state.index());
-			}
-			for (int index = 0; index < searchResult.assets().size(); index++) {
-				CatalogAsset asset = searchResult.assets().get(index);
-				addDrawableChild(
-					ButtonWidget.builder(
-						assetLabel(asset),
-						button -> client.setScreen(new AssetDetailsScreen(context, this, asset))
-					).dimensions(contentX, rowsY + index * ROW_HEIGHT, contentWidth, BUTTON_HEIGHT).build()
-				);
-			}
+		} else {
+			searchResult = new CatalogSearchResult(List.of(), 0, 0);
 		}
+		List<ScrollableActionListWidget.Row<CatalogAsset>> assetRows = searchResult.assets().stream()
+			.map(asset -> new ScrollableActionListWidget.Row<>(asset, assetLabel(asset), true))
+			.toList();
+		assetList = new ScrollableActionListWidget<>(
+			contentX,
+			rowsY,
+			contentWidth,
+			Math.max(1, statusY - CraftStudioTheme.SPACE_2 - rowsY),
+			ROW_HEIGHT,
+			Text.translatable("screen.craftstudio.catalog.title"),
+			textRenderer,
+			assetRows,
+			asset -> client.setScreen(new AssetDetailsScreen(context, this, asset))
+		);
+		assetList.active = state.ready();
+		assetList.setScrollY(listScrollY);
+		addDrawableChild(assetList);
 
-		int footerGap = CraftStudioTheme.SPACE_2;
-		int footerButtonWidth = (contentWidth - footerGap * 2) / 3;
-		ButtonWidget previousButton = ButtonWidget.builder(
-			Text.translatable("screen.craftstudio.catalog.previous"),
-			button -> {
-				offset = Math.max(0, offset - pageSize);
-				clearAndInit();
-			}
-		).dimensions(contentX, footerY, footerButtonWidth, BUTTON_HEIGHT).build();
-		previousButton.active = state.ready() && offset > 0;
-		addDrawableChild(previousButton);
-
+		int backWidth = Math.min(220, contentWidth);
 		addDrawableChild(
 			ButtonWidget.builder(
 				Text.translatable("screen.craftstudio.catalog.back"),
 				button -> close()
-			).dimensions(
-				contentX + footerButtonWidth + footerGap,
-				footerY,
-				footerButtonWidth,
-				BUTTON_HEIGHT
-			).build()
+			).dimensions((width - backWidth) / 2, footerY, backWidth, BUTTON_HEIGHT).build()
 		);
-
-		ButtonWidget nextButton = ButtonWidget.builder(
-			Text.translatable("screen.craftstudio.catalog.next"),
-			button -> {
-				offset += pageSize;
-				clearAndInit();
-			}
-		).dimensions(
-			contentX + (footerButtonWidth + footerGap) * 2,
-			footerY,
-			footerButtonWidth,
-			BUTTON_HEIGHT
-		).build();
-		nextButton.active = state.ready()
-			&& offset + searchResult.assets().size() < searchResult.totalCount();
-		addDrawableChild(nextButton);
 
 		setInitialFocus(searchField);
 	}
@@ -208,7 +190,7 @@ public final class AssetBrowserScreen extends Screen {
 			textRenderer,
 			status,
 			width / 2,
-			height - MARGIN - BUTTON_HEIGHT - 12,
+			height - getMargin() - BUTTON_HEIGHT - 12,
 			statusColor
 		);
 
@@ -228,8 +210,8 @@ public final class AssetBrowserScreen extends Screen {
 			category,
 			namespace,
 			sort,
-			offset,
-			pageSize
+			0,
+			Math.max(1, index.size())
 		));
 	}
 
@@ -294,5 +276,16 @@ public final class AssetBrowserScreen extends Screen {
 
 	private String shortMessage(String message) {
 		return message.length() <= 96 ? message : message.substring(0, 93) + "...";
+	}
+
+	private void resetListScroll() {
+		listScrollY = 0;
+		if (assetList != null) {
+			assetList.setScrollY(0);
+		}
+	}
+
+	private int getMargin() {
+		return width < 340 || height < 220 ? CraftStudioTheme.SPACE_2 : MARGIN;
 	}
 }

@@ -6,9 +6,13 @@ import dev.arcn.craftstudio.client.bootstrap.CraftStudioClientContext;
 import dev.arcn.craftstudio.graph.domain.AssetGraphEdge;
 import dev.arcn.craftstudio.graph.domain.AssetGraphNode;
 import dev.arcn.craftstudio.graph.domain.AssetResolutionResult;
+import dev.arcn.craftstudio.graph.domain.GraphEdgeType;
+import dev.arcn.craftstudio.graph.domain.GraphNodeType;
 import dev.arcn.craftstudio.graph.domain.ResolutionIssue;
 import dev.arcn.craftstudio.graph.domain.ResolutionIssueSeverity;
+import dev.arcn.craftstudio.resource.domain.SourceLayer;
 import dev.arcn.craftstudio.ui.theme.CraftStudioTheme;
+import dev.arcn.craftstudio.ui.widget.DependencyTreeWidget;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -22,7 +26,6 @@ import net.minecraft.text.Text;
 public final class AssetDetailsScreen extends Screen {
 	private static final int MARGIN = 16;
 	private static final int BUTTON_HEIGHT = 20;
-	private static final int ROW_HEIGHT = 12;
 
 	private final CraftStudioClientContext context;
 	private final Screen parent;
@@ -31,9 +34,9 @@ public final class AssetDetailsScreen extends Screen {
 	private AssetResolutionResult resolution;
 	private String resolutionError;
 	private boolean resolutionRequested;
-	private int offset;
-	private int pageSize = 1;
-	private List<DetailRow> rows = List.of();
+	private double detailScrollY;
+	private List<DependencyTreeWidget.Row> rows = List.of();
+	private DependencyTreeWidget detailList;
 
 	public AssetDetailsScreen(
 		CraftStudioClientContext context,
@@ -48,6 +51,9 @@ public final class AssetDetailsScreen extends Screen {
 
 	@Override
 	protected void init() {
+		if (detailList != null) {
+			detailScrollY = detailList.getScrollY();
+		}
 		if (asset.kind() == AssetKind.BLOCK && !resolutionRequested) {
 			resolutionRequested = true;
 			MinecraftClient clientReference = client;
@@ -65,59 +71,42 @@ public final class AssetDetailsScreen extends Screen {
 		}
 		if (asset.kind() == AssetKind.ITEM) {
 			rows = List.of(
-				new DetailRow(
-					Text.translatable("screen.craftstudio.asset_details.item_deferred").getString(),
+				DependencyTreeWidget.Row.notice(
+					Text.translatable("screen.craftstudio.asset_details.item_deferred"),
 					CraftStudioTheme.INFORMATION
 				)
 			);
 		}
 
-		int contentWidth = width - MARGIN * 2;
-		int footerY = height - MARGIN - BUTTON_HEIGHT;
-		int rowsY = 104;
-		pageSize = Math.max(1, (footerY - rowsY - 18) / ROW_HEIGHT);
-		if (offset >= rows.size() && offset > 0) {
-			offset = Math.max(0, ((rows.size() - 1) / pageSize) * pageSize);
-		}
+		int margin = getMargin();
+		int contentWidth = width - margin * 2;
+		int footerY = height - margin - BUTTON_HEIGHT;
+		int statusY = footerY - 12;
+		int rowsY = getRowsY();
+		detailList = new DependencyTreeWidget(
+			margin,
+			rowsY,
+			contentWidth,
+			Math.max(1, statusY - CraftStudioTheme.SPACE_2 - rowsY),
+			Text.translatable("screen.craftstudio.asset_details.dependencies"),
+			textRenderer,
+			displayRows()
+		);
+		detailList.setScrollY(detailScrollY);
+		addDrawableChild(detailList);
 
-		int gap = CraftStudioTheme.SPACE_2;
-		int buttonWidth = (contentWidth - gap * 2) / 3;
-		ButtonWidget previous = ButtonWidget.builder(
-			Text.translatable("screen.craftstudio.catalog.previous"),
-			button -> {
-				offset = Math.max(0, offset - pageSize);
-				clearAndInit();
-			}
-		).dimensions(MARGIN, footerY, buttonWidth, BUTTON_HEIGHT).build();
-		previous.active = offset > 0;
-		addDrawableChild(previous);
-
+		int backWidth = Math.min(220, contentWidth);
 		addDrawableChild(
 			ButtonWidget.builder(
 				Text.translatable("screen.craftstudio.catalog.back"),
 				button -> close()
 			).dimensions(
-				MARGIN + buttonWidth + gap,
+				(width - backWidth) / 2,
 				footerY,
-				buttonWidth,
+				backWidth,
 				BUTTON_HEIGHT
 			).build()
 		);
-
-		ButtonWidget next = ButtonWidget.builder(
-			Text.translatable("screen.craftstudio.catalog.next"),
-			button -> {
-				offset += pageSize;
-				clearAndInit();
-			}
-		).dimensions(
-			MARGIN + (buttonWidth + gap) * 2,
-			footerY,
-			buttonWidth,
-			BUTTON_HEIGHT
-		).build();
-		next.active = offset + pageSize < rows.size();
-		addDrawableChild(next);
 	}
 
 	@Override
@@ -133,8 +122,18 @@ public final class AssetDetailsScreen extends Screen {
 			CraftStudioTheme.TEXT_PRIMARY
 		);
 
-		int textX = MARGIN;
-		drawLine(drawContext, "screen.craftstudio.asset_details.id", asset.identifier(), textX, 36);
+		int margin = getMargin();
+		int textX = margin;
+		boolean compactHeight = height < 240;
+		int firstMetadataY = compactHeight ? 32 : 36;
+		int metadataSpacing = compactHeight ? 11 : 14;
+		drawLine(
+			drawContext,
+			"screen.craftstudio.asset_details.id",
+			asset.identifier(),
+			textX,
+			firstMetadataY
+		);
 		drawLine(
 			drawContext,
 			"screen.craftstudio.asset_details.type",
@@ -144,14 +143,14 @@ public final class AssetDetailsScreen extends Screen {
 					: "screen.craftstudio.catalog.type.item"
 			).getString(),
 			textX,
-			50
+			firstMetadataY + metadataSpacing
 		);
 		drawLine(
 			drawContext,
 			"screen.craftstudio.asset_details.translation_key",
 			asset.translationKey(),
 			textX,
-			64
+			firstMetadataY + metadataSpacing * 2
 		);
 
 		Text sectionTitle = asset.kind() == AssetKind.BLOCK
@@ -161,47 +160,15 @@ public final class AssetDetailsScreen extends Screen {
 			textRenderer,
 			sectionTitle,
 			textX,
-			86,
+			compactHeight ? 68 : 86,
 			CraftStudioTheme.TEXT_PRIMARY
 		);
-
-		if (resolutionError != null) {
-			drawContext.drawWrappedTextWithShadow(
-				textRenderer,
-				Text.literal(resolutionError),
-				textX,
-				104,
-				width - MARGIN * 2,
-				CraftStudioTheme.ERROR
-			);
-		} else if (asset.kind() == AssetKind.BLOCK && resolution == null) {
-			drawContext.drawTextWithShadow(
-				textRenderer,
-				Text.translatable("screen.craftstudio.asset_details.resolving"),
-				textX,
-				104,
-				CraftStudioTheme.INFORMATION
-			);
-		} else {
-			int end = Math.min(rows.size(), offset + pageSize);
-			for (int index = offset; index < end; index++) {
-				DetailRow row = rows.get(index);
-				String visible = textRenderer.trimToWidth(row.text(), width - MARGIN * 2);
-				drawContext.drawTextWithShadow(
-					textRenderer,
-					Text.literal(visible),
-					textX,
-					104 + (index - offset) * ROW_HEIGHT,
-					row.color()
-				);
-			}
-		}
 
 		drawContext.drawCenteredTextWithShadow(
 			textRenderer,
 			statusText(),
 			width / 2,
-			height - MARGIN - BUTTON_HEIGHT - 12,
+			height - margin - BUTTON_HEIGHT - 12,
 			resolutionError == null ? CraftStudioTheme.TEXT_MUTED : CraftStudioTheme.ERROR
 		);
 		super.render(drawContext, mouseX, mouseY, deltaTicks);
@@ -214,14 +181,14 @@ public final class AssetDetailsScreen extends Screen {
 		}
 	}
 
-	private List<DetailRow> createGraphRows(AssetResolutionResult result) {
-		List<DetailRow> resultRows = new ArrayList<>();
+	private List<DependencyTreeWidget.Row> createGraphRows(AssetResolutionResult result) {
+		List<DependencyTreeWidget.Row> resultRows = new ArrayList<>();
 		Set<String> expandedNodes = new HashSet<>();
 		expandedNodes.add(result.graph().rootNodeId());
 		appendOutgoingRows(result, result.graph().rootNodeId(), 0, expandedNodes, resultRows);
 		if (!result.issues().isEmpty()) {
-			resultRows.add(new DetailRow(
-				Text.translatable("screen.craftstudio.asset_details.issues").getString(),
+			resultRows.add(DependencyTreeWidget.Row.notice(
+				Text.translatable("screen.craftstudio.asset_details.issues"),
 				CraftStudioTheme.TEXT_PRIMARY
 			));
 			for (ResolutionIssue issue : result.issues()) {
@@ -230,8 +197,8 @@ public final class AssetDetailsScreen extends Screen {
 					: issue.severity() == ResolutionIssueSeverity.WARNING
 						? CraftStudioTheme.INFORMATION
 						: CraftStudioTheme.TEXT_MUTED;
-				resultRows.add(new DetailRow(
-					"[" + issue.severity() + " " + issue.code() + "] " + issue.message(),
+				resultRows.add(DependencyTreeWidget.Row.notice(
+					Text.literal("[" + issue.severity() + " " + issue.code() + "] " + issue.message()),
 					color
 				));
 			}
@@ -244,23 +211,24 @@ public final class AssetDetailsScreen extends Screen {
 		String nodeId,
 		int depth,
 		Set<String> expandedNodes,
-		List<DetailRow> destination
+		List<DependencyTreeWidget.Row> destination
 	) {
 		for (AssetGraphEdge edge : result.graph().outgoing(nodeId)) {
 			AssetGraphNode target = result.graph().nodes().get(edge.toNodeId());
 			boolean firstVisit = expandedNodes.add(target.id());
-			String indentation = "  ".repeat(Math.min(depth, 8));
-			String relation = edge.type().name().toLowerCase().replace('_', ' ');
 			String targetName = target.packPath().isEmpty()
 				? target.namespace() + ":" + target.logicalPath()
 				: target.packPath();
-			String shared = firstVisit ? "" : " (already shown)";
-			destination.add(new DetailRow(
-				indentation + "• " + relation + " [" + edge.label() + "] → "
-					+ targetName + " [" + target.sourceLayer() + "]" + shared,
-				target.sourceLayer() == dev.arcn.craftstudio.resource.domain.SourceLayer.MISSING
+			destination.add(DependencyTreeWidget.Row.dependency(
+				depth,
+				Text.literal(nodeTypeLabel(target.type())),
+				Text.literal(relationshipLabel(edge.type(), edge.label())),
+				targetName,
+				Text.literal(sourceLabel(target.sourceLayer())),
+				target.sourceLayer() == SourceLayer.MISSING
 					? CraftStudioTheme.ERROR
-					: CraftStudioTheme.TEXT_MUTED
+					: sourceColor(target.sourceLayer()),
+				!firstVisit
 			));
 			if (firstVisit && depth < 12) {
 				appendOutgoingRows(result, target.id(), depth + 1, expandedNodes, destination);
@@ -286,6 +254,76 @@ public final class AssetDetailsScreen extends Screen {
 		return Text.translatable("screen.craftstudio.asset_details.item_deferred");
 	}
 
+	private List<DependencyTreeWidget.Row> displayRows() {
+		if (resolutionError != null) {
+			return List.of(DependencyTreeWidget.Row.notice(
+				Text.literal(resolutionError),
+				CraftStudioTheme.ERROR
+			));
+		}
+		if (asset.kind() == AssetKind.BLOCK && resolution == null) {
+			return List.of(DependencyTreeWidget.Row.notice(
+				Text.translatable("screen.craftstudio.asset_details.resolving"),
+				CraftStudioTheme.INFORMATION
+			));
+		}
+		return rows;
+	}
+
+	private String nodeTypeLabel(GraphNodeType type) {
+		return switch (type) {
+			case BLOCK -> "BLOCK";
+			case ITEM -> "ITEM";
+			case BLOCKSTATE_FILE -> "BLOCKSTATE";
+			case CLIENT_ITEM_FILE -> "ITEM DEF";
+			case MODEL_FILE -> "MODEL";
+			case TEXTURE_FILE -> "TEXTURE";
+			case TEXTURE_METADATA_FILE -> "METADATA";
+			case ATLAS_FILE -> "ATLAS";
+			case BUILTIN_MODEL -> "BUILT-IN";
+			case SPECIAL_RENDERER -> "SPECIAL";
+			case UNKNOWN_RESOURCE -> "UNKNOWN";
+		};
+	}
+
+	private String relationshipLabel(GraphEdgeType type, String label) {
+		String relationship = switch (type) {
+			case HAS_BLOCKSTATE -> "Block appearance";
+			case HAS_CLIENT_ITEM -> "Item representation";
+			case SELECTS_MODEL -> "Selected model";
+			case USES_MODEL -> "Uses model";
+			case INHERITS_MODEL -> "Parent model";
+			case USES_TEXTURE_VARIABLE -> "Texture variable";
+			case RESOLVES_TEXTURE -> "Resolved texture";
+			case USES_METADATA -> "Texture metadata";
+			case REQUIRES_ATLAS -> "Required atlas";
+			case SHARED_BY -> "Shared dependency";
+			case HAS_VARIANT -> "Variant";
+			case HAS_MULTIPART_CASE -> "Multipart case";
+			case USES_SPECIAL_RENDERER -> "Special renderer";
+		};
+		return label.isBlank() ? relationship : relationship + "  ·  " + label;
+	}
+
+	private String sourceLabel(SourceLayer sourceLayer) {
+		return switch (sourceLayer) {
+			case VANILLA_BASE -> "VANILLA";
+			case ACTIVE_PACK_STACK -> "PACK";
+			case PROJECT -> "PROJECT";
+			case GENERATED -> "GENERATED";
+			case MISSING -> "MISSING";
+		};
+	}
+
+	private int sourceColor(SourceLayer sourceLayer) {
+		return switch (sourceLayer) {
+			case PROJECT -> CraftStudioTheme.SUCCESS;
+			case GENERATED -> CraftStudioTheme.INFORMATION;
+			case MISSING -> CraftStudioTheme.ERROR;
+			case VANILLA_BASE, ACTIVE_PACK_STACK -> CraftStudioTheme.TEXT_MUTED;
+		};
+	}
+
 	private void drawLine(
 		DrawContext drawContext,
 		String labelKey,
@@ -293,15 +331,36 @@ public final class AssetDetailsScreen extends Screen {
 		int x,
 		int y
 	) {
+		String line = Text.translatable(labelKey, value).getString();
 		drawContext.drawTextWithShadow(
 			textRenderer,
-			Text.translatable(labelKey, value),
+			Text.literal(middleTruncate(line, width - getMargin() - x)),
 			x,
 			y,
 			CraftStudioTheme.TEXT_MUTED
 		);
 	}
 
-	private record DetailRow(String text, int color) {
+	private String middleTruncate(String value, int availableWidth) {
+		if (textRenderer.getWidth(value) <= availableWidth) {
+			return value;
+		}
+		String ellipsis = "...";
+		int sideWidth = Math.max(12, (availableWidth - textRenderer.getWidth(ellipsis)) / 2);
+		String start = textRenderer.trimToWidth(value, sideWidth);
+		String reversedEnd = textRenderer.trimToWidth(
+			new StringBuilder(value).reverse().toString(),
+			sideWidth
+		);
+		return start + ellipsis + new StringBuilder(reversedEnd).reverse();
 	}
+
+	private int getRowsY() {
+		return height < 240 ? 80 : 104;
+	}
+
+	private int getMargin() {
+		return width < 340 || height < 220 ? CraftStudioTheme.SPACE_2 : MARGIN;
+	}
+
 }
