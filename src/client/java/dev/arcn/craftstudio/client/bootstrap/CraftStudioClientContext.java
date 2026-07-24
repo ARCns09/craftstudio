@@ -13,6 +13,10 @@ import dev.arcn.craftstudio.project.domain.RecentProjectEntry;
 import dev.arcn.craftstudio.project.infrastructure.PackMetadataWriter;
 import dev.arcn.craftstudio.project.infrastructure.ProjectMetadataRepository;
 import dev.arcn.craftstudio.project.infrastructure.RecentProjectRegistry;
+import dev.arcn.craftstudio.resource.application.AssetSource;
+import dev.arcn.craftstudio.resource.domain.ResourcePath;
+import dev.arcn.craftstudio.resource.infrastructure.filesystem.ProjectAssetSource;
+import dev.arcn.craftstudio.resource.infrastructure.minecraft.VanillaAssetSource;
 import dev.arcn.craftstudio.version.TargetVersionManifest;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -21,24 +25,29 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.util.Identifier;
 
 public final class CraftStudioClientContext implements AutoCloseable {
 	private final WorkspacePaths workspacePaths;
 	private final ProjectService projectService;
 	private final RecentProjectRegistry recentProjectRegistry;
 	private final MinecraftVanillaCatalogAdapter catalogAdapter;
+	private final VanillaAssetSource vanillaAssetSource;
 	private final ExecutorService backgroundExecutor;
 	private final AtomicLong recentProjectsRevision = new AtomicLong();
 	private final AtomicLong catalogRevision = new AtomicLong();
 
 	private volatile List<RecentProjectView> recentProjects = List.of();
 	private volatile CraftStudioProject activeProject;
+	private volatile ProjectAssetSource activeProjectSource;
 	private volatile CatalogIndex catalogIndex;
 	private volatile boolean catalogLoading;
 	private volatile String catalogError;
@@ -48,12 +57,14 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		WorkspacePaths workspacePaths,
 		ProjectService projectService,
 		RecentProjectRegistry recentProjectRegistry,
-		MinecraftVanillaCatalogAdapter catalogAdapter
+		MinecraftVanillaCatalogAdapter catalogAdapter,
+		VanillaAssetSource vanillaAssetSource
 	) {
 		this.workspacePaths = workspacePaths;
 		this.projectService = projectService;
 		this.recentProjectRegistry = recentProjectRegistry;
 		this.catalogAdapter = catalogAdapter;
+		this.vanillaAssetSource = vanillaAssetSource;
 		this.backgroundExecutor = Executors.newFixedThreadPool(2, Thread.ofPlatform()
 			.name("craftstudio-worker-", 0)
 			.factory());
@@ -72,8 +83,9 @@ public final class CraftStudioClientContext implements AutoCloseable {
 
 		AtomicFileWriter atomicFileWriter = new AtomicFileWriter();
 		ProjectMetadataRepository metadataRepository = new ProjectMetadataRepository(atomicFileWriter);
+		TargetVersionManifest target = TargetVersionManifest.minecraft_1_21_11();
 		ProjectService projectService = new ProjectService(
-			TargetVersionManifest.minecraft_1_21_11(),
+			target,
 			metadataRepository,
 			new PackMetadataWriter(atomicFileWriter),
 			atomicFileWriter,
@@ -87,12 +99,25 @@ public final class CraftStudioClientContext implements AutoCloseable {
 			paths,
 			projectService,
 			recentProjects,
-			new MinecraftVanillaCatalogAdapter()
+			new MinecraftVanillaCatalogAdapter(),
+			new VanillaAssetSource(MinecraftClient.getInstance().getDefaultResourcePack(), target.minecraftVersion())
 		);
 	}
 
 	public void initialize() {
 		CompletableFuture.runAsync(this::loadRecentProjectsSafely, backgroundExecutor);
+	}
+
+	public void verifyVanillaSource() {
+		ResourcePath activePackProbe = new ResourcePath(CraftStudio.MOD_ID, "lang/en_us.json");
+		boolean activeStackContainsProbe = MinecraftClient.getInstance()
+			.getResourceManager()
+			.getResource(Identifier.of(activePackProbe.namespace(), activePackProbe.path()))
+			.isPresent();
+		CompletableFuture.runAsync(
+			() -> verifyVanillaSourceSafely(activePackProbe, activeStackContainsProbe),
+			backgroundExecutor
+		);
 	}
 
 	public synchronized void startCatalogIndex() {
@@ -165,6 +190,14 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		return activeProject;
 	}
 
+	public AssetSource vanillaAssetSource() {
+		return vanillaAssetSource;
+	}
+
+	public Optional<ProjectAssetSource> activeProjectSource() {
+		return Optional.ofNullable(activeProjectSource);
+	}
+
 	public List<RecentProjectView> recentProjects() {
 		return recentProjects;
 	}
@@ -194,6 +227,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 
 	private void recordOpenedProject(CraftStudioProject project) {
 		activeProject = project;
+		activeProjectSource = new ProjectAssetSource(project);
 		try {
 			setRecentProjects(recentProjectRegistry.touch(project, Instant.now()));
 		} catch (IOException exception) {
@@ -202,6 +236,40 @@ public final class CraftStudioClientContext implements AutoCloseable {
 				project.metadata().projectId(),
 				exception
 			);
+		}
+	}
+
+	private void verifyVanillaSourceSafely(
+		ResourcePath activePackProbe,
+		boolean activeStackContainsProbe
+	) {
+		List<ResourcePath> expectedResources = List.of(
+			new ResourcePath("minecraft", "blockstates/stone.json"),
+			new ResourcePath("minecraft", "models/block/stone.json"),
+			new ResourcePath("minecraft", "textures/block/stone.png")
+		);
+		try {
+			for (ResourcePath path : expectedResources) {
+				if (vanillaAssetSource.read(path).isEmpty()) {
+					throw new IOException("Missing vanilla base resource: " + path.packPath());
+				}
+			}
+			boolean vanillaContainsProbe = vanillaAssetSource.read(activePackProbe).isPresent();
+			if (!activeStackContainsProbe) {
+				throw new IOException("Active resource stack did not expose the CraftStudio probe resource.");
+			}
+			if (vanillaContainsProbe) {
+				throw new IOException("Vanilla source included a CraftStudio active-pack resource.");
+			}
+			CraftStudio.LOGGER.info(
+				"Vanilla source verified resource_count={} active_pack_probe={} base_pack_probe={} revision={} operation=vanilla_source_verify",
+				expectedResources.size(),
+				activeStackContainsProbe,
+				vanillaContainsProbe,
+				vanillaAssetSource.revision()
+			);
+		} catch (IOException | RuntimeException exception) {
+			CraftStudio.LOGGER.error("Could not verify vanilla source operation=vanilla_source_verify", exception);
 		}
 	}
 

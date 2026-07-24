@@ -64,11 +64,19 @@ tasks.register("catalogIndexTest", JavaExec) {
 	mainClass = "dev.arcn.craftstudio.catalog.CatalogIndexTest"
 }
 
+tasks.register("resourceSourceTest", JavaExec) {
+	group = "verification"
+	description = "Runs dependency-free resource source tests."
+	dependsOn testClasses
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = "dev.arcn.craftstudio.resource.ResourceSourceTest"
+}
+
 tasks.named("test") {
 	failOnNoDiscoveredTests = false
 }
 
-check.dependsOn projectFoundationTest, catalogIndexTest
+check.dependsOn projectFoundationTest, catalogIndexTest, resourceSourceTest
 
 java {
 	// Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task

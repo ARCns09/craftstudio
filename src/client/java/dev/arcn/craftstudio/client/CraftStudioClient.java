@@ -12,6 +12,7 @@ public class CraftStudioClient implements ClientModInitializer {
 		CraftStudioClientContext context = CraftStudioClientContext.create();
 		context.initialize();
 		CraftStudioKeyBindings.register(context);
+		ClientLifecycleEvents.CLIENT_STARTED.register(client -> context.verifyVanillaSource());
 		ClientLifecycleEvents.CLIENT_STOPPING.register(client -> context.close());
 		CraftStudio.LOGGER.info("CraftStudio client initialized.");
 	}
