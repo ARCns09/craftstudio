@@ -13,7 +13,7 @@ import net.minecraft.text.Text;
 public final class CraftStudioHomeScreen extends Screen {
 	private static final Text TITLE = Text.translatable("screen.craftstudio.home.title");
 	private static final int PANEL_MAX_WIDTH = 360;
-	private static final int PANEL_MAX_HEIGHT = 276;
+	private static final int PANEL_MAX_HEIGHT = 300;
 	private static final int BUTTON_HEIGHT = 20;
 
 	private final CraftStudioClientContext context;
@@ -58,19 +58,31 @@ public final class CraftStudioHomeScreen extends Screen {
 		openProjectButton.active = !busy;
 		addDrawableChild(openProjectButton);
 
-		ButtonWidget closeButton = ButtonWidget.builder(
-			Text.translatable("screen.craftstudio.home.close"),
-			button -> close()
+		ButtonWidget browseAssetsButton = ButtonWidget.builder(
+			Text.translatable("screen.craftstudio.home.browse_assets"),
+			button -> client.setScreen(new AssetBrowserScreen(context, this))
 		).dimensions(
 			contentX,
 			buttonY + BUTTON_HEIGHT + CraftStudioTheme.SPACE_2,
 			contentWidth,
 			BUTTON_HEIGHT
 		).build();
+		browseAssetsButton.active = !busy;
+		addDrawableChild(browseAssetsButton);
+
+		ButtonWidget closeButton = ButtonWidget.builder(
+			Text.translatable("screen.craftstudio.home.close"),
+			button -> close()
+		).dimensions(
+			contentX,
+			buttonY + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 2,
+			contentWidth,
+			BUTTON_HEIGHT
+		).build();
 		closeButton.active = !busy;
 		addDrawableChild(closeButton);
 
-		int recentY = buttonY + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 2 + 36;
+		int recentY = buttonY + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 3 + 36;
 		int availableHeight = panelY + getPanelHeight() - CraftStudioTheme.SPACE_4 - recentY;
 		int maximumVisible = Math.min(3, Math.max(0, availableHeight / 24));
 		int index = 0;
@@ -146,7 +158,7 @@ public final class CraftStudioHomeScreen extends Screen {
 			);
 		}
 
-		int recentHeaderY = panelY + 144;
+		int recentHeaderY = panelY + 172;
 		drawContext.drawTextWithShadow(
 			textRenderer,
 			Text.translatable("screen.craftstudio.home.recent_projects"),

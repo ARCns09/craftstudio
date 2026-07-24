@@ -1,6 +1,9 @@
 package dev.arcn.craftstudio.client.bootstrap;
 
 import dev.arcn.craftstudio.CraftStudio;
+import dev.arcn.craftstudio.catalog.application.CatalogIndex;
+import dev.arcn.craftstudio.catalog.domain.CatalogAssetSeed;
+import dev.arcn.craftstudio.catalog.infrastructure.minecraft.MinecraftVanillaCatalogAdapter;
 import dev.arcn.craftstudio.platform.filesystem.AtomicFileWriter;
 import dev.arcn.craftstudio.platform.paths.WorkspacePaths;
 import dev.arcn.craftstudio.project.application.ProjectService;
@@ -29,22 +32,30 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private final WorkspacePaths workspacePaths;
 	private final ProjectService projectService;
 	private final RecentProjectRegistry recentProjectRegistry;
-	private final ExecutorService ioExecutor;
+	private final MinecraftVanillaCatalogAdapter catalogAdapter;
+	private final ExecutorService backgroundExecutor;
 	private final AtomicLong recentProjectsRevision = new AtomicLong();
+	private final AtomicLong catalogRevision = new AtomicLong();
 
 	private volatile List<RecentProjectView> recentProjects = List.of();
 	private volatile CraftStudioProject activeProject;
+	private volatile CatalogIndex catalogIndex;
+	private volatile boolean catalogLoading;
+	private volatile String catalogError;
+	private boolean catalogStarted;
 
 	private CraftStudioClientContext(
 		WorkspacePaths workspacePaths,
 		ProjectService projectService,
-		RecentProjectRegistry recentProjectRegistry
+		RecentProjectRegistry recentProjectRegistry,
+		MinecraftVanillaCatalogAdapter catalogAdapter
 	) {
 		this.workspacePaths = workspacePaths;
 		this.projectService = projectService;
 		this.recentProjectRegistry = recentProjectRegistry;
-		this.ioExecutor = Executors.newFixedThreadPool(2, Thread.ofPlatform()
-			.name("craftstudio-io-", 0)
+		this.catalogAdapter = catalogAdapter;
+		this.backgroundExecutor = Executors.newFixedThreadPool(2, Thread.ofPlatform()
+			.name("craftstudio-worker-", 0)
 			.factory());
 	}
 
@@ -72,11 +83,54 @@ public final class CraftStudioClientContext implements AutoCloseable {
 			paths.recentProjectsFile(),
 			atomicFileWriter
 		);
-		return new CraftStudioClientContext(paths, projectService, recentProjects);
+		return new CraftStudioClientContext(
+			paths,
+			projectService,
+			recentProjects,
+			new MinecraftVanillaCatalogAdapter()
+		);
 	}
 
 	public void initialize() {
-		CompletableFuture.runAsync(this::loadRecentProjectsSafely, ioExecutor);
+		CompletableFuture.runAsync(this::loadRecentProjectsSafely, backgroundExecutor);
+	}
+
+	public synchronized void startCatalogIndex() {
+		if (catalogStarted) {
+			return;
+		}
+		catalogStarted = true;
+		catalogLoading = true;
+		catalogError = null;
+		catalogRevision.incrementAndGet();
+
+		List<CatalogAssetSeed> seeds;
+		try {
+			seeds = catalogAdapter.snapshot();
+		} catch (RuntimeException exception) {
+			catalogLoading = false;
+			catalogError = userMessage(exception);
+			catalogRevision.incrementAndGet();
+			CraftStudio.LOGGER.error("Could not snapshot registries operation=catalog_snapshot", exception);
+			return;
+		}
+
+		CompletableFuture.supplyAsync(() -> CatalogIndex.build(seeds), backgroundExecutor)
+			.whenComplete((index, error) -> {
+				catalogLoading = false;
+				if (error == null) {
+					catalogIndex = index;
+					CraftStudio.LOGGER.info(
+						"Catalog indexed asset_count={} namespace_count={} operation=catalog_index",
+						index.size(),
+						index.namespaces().size()
+					);
+				} else {
+					catalogError = userMessage(error);
+					CraftStudio.LOGGER.error("Could not build catalog operation=catalog_index", error);
+				}
+				catalogRevision.incrementAndGet();
+			});
 	}
 
 	public CompletableFuture<CraftStudioProject> createProject(ProjectCreationRequest request) {
@@ -88,7 +142,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 			} catch (Exception exception) {
 				throw new CompletionException(exception);
 			}
-		}, ioExecutor);
+		}, backgroundExecutor);
 	}
 
 	public CompletableFuture<CraftStudioProject> openProject(Path projectPath) {
@@ -100,7 +154,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 			} catch (Exception exception) {
 				throw new CompletionException(exception);
 			}
-		}, ioExecutor);
+		}, backgroundExecutor);
 	}
 
 	public Path defaultWorkspaceRoot() {
@@ -119,9 +173,13 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		return recentProjectsRevision.get();
 	}
 
+	public CatalogState catalogState() {
+		return new CatalogState(catalogIndex, catalogLoading, catalogError, catalogRevision.get());
+	}
+
 	@Override
 	public void close() {
-		ioExecutor.shutdownNow();
+		backgroundExecutor.shutdownNow();
 	}
 
 	public static String userMessage(Throwable throwable) {
@@ -173,5 +231,16 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	}
 
 	public record RecentProjectView(RecentProjectEntry entry, boolean available) {
+	}
+
+	public record CatalogState(
+		CatalogIndex index,
+		boolean loading,
+		String error,
+		long revision
+	) {
+		public boolean ready() {
+			return index != null;
+		}
 	}
 }
