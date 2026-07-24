@@ -1,0 +1,38 @@
+{
+	"schemaVersion": 1,
+	"id": "craftstudio",
+	"version": "${version}",
+	"name": "CraftStudio",
+	"description": "This is an example description! Tell everyone what your mod is about!",
+	"authors": [
+		"Me!"
+	],
+	"contact": {
+		"homepage": "https://fabricmc.net/",
+		"sources": "https://github.com/FabricMC/fabric-example-mod"
+	},
+	"license": "CC0-1.0",
+	"icon": "assets/craftstudio/icon.png",
+	"environment": "*",
+	"entrypoints": {
+		"main": [
+			"dev.arcn.craftstudio.CraftStudio"
+		],
+		"client": [
+			"dev.arcn.craftstudio.client.CraftStudioClient"
+		]
+	},
+	"mixins": [
+		"craftstudio.mixins.json",
+		{
+			"config": "craftstudio.client.mixins.json",
+			"environment": "client"
+		}
+	],
+	"depends": {
+		"fabricloader": ">=0.19.3",
+		"minecraft": "~1.21.11",
+		"java": ">=21",
+		"fabric-api": "*"
+	}
+}
