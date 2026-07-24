@@ -1,0 +1,5 @@
+{
+  "variants": {
+    "": {"model": "minecraft:block/does_not_exist"}
+  }
+}

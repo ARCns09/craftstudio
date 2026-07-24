@@ -130,7 +130,7 @@ public final class AssetBrowserScreen extends Screen {
 				addDrawableChild(
 					ButtonWidget.builder(
 						assetLabel(asset),
-						button -> client.setScreen(new AssetDetailsScreen(this, asset))
+						button -> client.setScreen(new AssetDetailsScreen(context, this, asset))
 					).dimensions(contentX, rowsY + index * ROW_HEIGHT, contentWidth, BUTTON_HEIGHT).build()
 				);
 			}

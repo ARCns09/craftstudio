@@ -1,0 +1,8 @@
+{
+  "variants": {
+    "": [
+      {"model": "minecraft:block/stone", "weight": 3},
+      {"model": "minecraft:block/stone_mirrored", "weight": 1}
+    ]
+  }
+}

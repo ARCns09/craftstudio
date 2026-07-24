@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:block/cycle_b",
+  "textures": {
+    "all": "#other"
+  }
+}

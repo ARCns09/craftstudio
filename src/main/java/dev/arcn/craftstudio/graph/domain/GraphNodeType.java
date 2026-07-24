@@ -1,0 +1,15 @@
+package dev.arcn.craftstudio.graph.domain;
+
+public enum GraphNodeType {
+	BLOCK,
+	ITEM,
+	BLOCKSTATE_FILE,
+	CLIENT_ITEM_FILE,
+	MODEL_FILE,
+	TEXTURE_FILE,
+	TEXTURE_METADATA_FILE,
+	ATLAS_FILE,
+	BUILTIN_MODEL,
+	SPECIAL_RENDERER,
+	UNKNOWN_RESOURCE
+}

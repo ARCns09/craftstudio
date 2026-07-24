@@ -2,8 +2,13 @@ package dev.arcn.craftstudio.client.bootstrap;
 
 import dev.arcn.craftstudio.CraftStudio;
 import dev.arcn.craftstudio.catalog.application.CatalogIndex;
+import dev.arcn.craftstudio.catalog.domain.AssetKind;
+import dev.arcn.craftstudio.catalog.domain.CatalogAsset;
 import dev.arcn.craftstudio.catalog.domain.CatalogAssetSeed;
 import dev.arcn.craftstudio.catalog.infrastructure.minecraft.MinecraftVanillaCatalogAdapter;
+import dev.arcn.craftstudio.graph.domain.AssetKey;
+import dev.arcn.craftstudio.graph.domain.AssetResolutionResult;
+import dev.arcn.craftstudio.graph.resolver.BlockDependencyResolver;
 import dev.arcn.craftstudio.platform.filesystem.AtomicFileWriter;
 import dev.arcn.craftstudio.platform.paths.WorkspacePaths;
 import dev.arcn.craftstudio.project.application.ProjectService;
@@ -28,6 +33,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
@@ -41,7 +47,10 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private final RecentProjectRegistry recentProjectRegistry;
 	private final MinecraftVanillaCatalogAdapter catalogAdapter;
 	private final VanillaAssetSource vanillaAssetSource;
+	private final BlockDependencyResolver blockDependencyResolver;
 	private final ExecutorService backgroundExecutor;
+	private final ConcurrentHashMap<String, CompletableFuture<AssetResolutionResult>> blockResolutionCache =
+		new ConcurrentHashMap<>();
 	private final AtomicLong recentProjectsRevision = new AtomicLong();
 	private final AtomicLong catalogRevision = new AtomicLong();
 
@@ -58,13 +67,15 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		ProjectService projectService,
 		RecentProjectRegistry recentProjectRegistry,
 		MinecraftVanillaCatalogAdapter catalogAdapter,
-		VanillaAssetSource vanillaAssetSource
+		VanillaAssetSource vanillaAssetSource,
+		BlockDependencyResolver blockDependencyResolver
 	) {
 		this.workspacePaths = workspacePaths;
 		this.projectService = projectService;
 		this.recentProjectRegistry = recentProjectRegistry;
 		this.catalogAdapter = catalogAdapter;
 		this.vanillaAssetSource = vanillaAssetSource;
+		this.blockDependencyResolver = blockDependencyResolver;
 		this.backgroundExecutor = Executors.newFixedThreadPool(2, Thread.ofPlatform()
 			.name("craftstudio-worker-", 0)
 			.factory());
@@ -95,12 +106,17 @@ public final class CraftStudioClientContext implements AutoCloseable {
 			paths.recentProjectsFile(),
 			atomicFileWriter
 		);
+		VanillaAssetSource vanillaAssets = new VanillaAssetSource(
+			MinecraftClient.getInstance().getDefaultResourcePack(),
+			target.minecraftVersion()
+		);
 		return new CraftStudioClientContext(
 			paths,
 			projectService,
 			recentProjects,
 			new MinecraftVanillaCatalogAdapter(),
-			new VanillaAssetSource(MinecraftClient.getInstance().getDefaultResourcePack(), target.minecraftVersion())
+			vanillaAssets,
+			new BlockDependencyResolver(vanillaAssets, target.minecraftVersion())
 		);
 	}
 
@@ -196,6 +212,42 @@ public final class CraftStudioClientContext implements AutoCloseable {
 
 	public Optional<ProjectAssetSource> activeProjectSource() {
 		return Optional.ofNullable(activeProjectSource);
+	}
+
+	public CompletableFuture<AssetResolutionResult> resolveBlock(CatalogAsset asset) {
+		if (asset.kind() != AssetKind.BLOCK) {
+			return CompletableFuture.failedFuture(
+				new IllegalArgumentException("Only block assets can use the block dependency resolver.")
+			);
+		}
+		String cacheKey = vanillaAssetSource.revision() + "|" + asset.identifier();
+		return blockResolutionCache.computeIfAbsent(cacheKey, ignored -> {
+			AssetKey key = new AssetKey(asset.kind(), asset.namespace(), asset.path());
+			CompletableFuture<AssetResolutionResult> future = CompletableFuture.supplyAsync(
+				() -> blockDependencyResolver.resolve(key),
+				backgroundExecutor
+			);
+			future.whenComplete((result, error) -> {
+				if (error != null) {
+					blockResolutionCache.remove(cacheKey, future);
+					CraftStudio.LOGGER.error(
+						"Block resolution failed asset_id={} operation=block_resolve",
+						asset.identifier(),
+						error
+					);
+				} else {
+					CraftStudio.LOGGER.info(
+						"Block resolved asset_id={} node_count={} edge_count={} issue_count={} missing_count={} operation=block_resolve",
+						asset.identifier(),
+						result.stats().nodeCount(),
+						result.stats().edgeCount(),
+						result.stats().issueCount(),
+						result.stats().missingCount()
+					);
+				}
+			});
+			return future;
+		});
 	}
 
 	public List<RecentProjectView> recentProjects() {
