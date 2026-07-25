@@ -14,6 +14,9 @@ public record PreviewGuiElementRenderState(
 	float pitch,
 	float panX,
 	float panY,
+	float centerX,
+	float centerY,
+	float centerZ,
 	int x1,
 	int y1,
 	int x2,
@@ -29,6 +32,9 @@ public record PreviewGuiElementRenderState(
 		float pitch,
 		float panX,
 		float panY,
+		float centerX,
+		float centerY,
+		float centerZ,
 		int x1,
 		int y1,
 		int x2,
@@ -43,6 +49,9 @@ public record PreviewGuiElementRenderState(
 			pitch,
 			panX,
 			panY,
+			centerX,
+			centerY,
+			centerZ,
 			x1,
 			y1,
 			x2,
@@ -59,6 +68,11 @@ public record PreviewGuiElementRenderState(
 		bounds = Objects.requireNonNull(bounds, "bounds");
 		if (!Float.isFinite(scale) || scale <= 0.0F) {
 			throw new IllegalArgumentException("Preview scale must be positive and finite.");
+		}
+		if (!Float.isFinite(centerX)
+			|| !Float.isFinite(centerY)
+			|| !Float.isFinite(centerZ)) {
+			throw new IllegalArgumentException("Preview center must be finite.");
 		}
 	}
 }

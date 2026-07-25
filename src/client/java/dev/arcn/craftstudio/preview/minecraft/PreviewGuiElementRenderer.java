@@ -42,7 +42,7 @@ public final class PreviewGuiElementRenderer
 		matrices.scale(1.0F, -1.0F, 1.0F);
 		matrices.multiply(RotationAxis.POSITIVE_X.rotationDegrees(state.pitch()));
 		matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(state.yaw()));
-		matrices.translate(-8.0F, -8.0F, -8.0F);
+		matrices.translate(-state.centerX(), -state.centerY(), -state.centerZ());
 
 		for (Face face : state.variant().faces()) {
 			Identifier texture = state.textures().get(face.textureKey());
@@ -65,8 +65,8 @@ public final class PreviewGuiElementRenderer
 	}
 
 	@Override
-	protected float getYOffset(int width, int height) {
-		return height / 2.0F;
+	protected float getYOffset(int renderTargetHeight, int guiScale) {
+		return renderTargetHeight / 2.0F;
 	}
 
 	@Override

@@ -20,6 +20,8 @@ import net.minecraft.util.math.MathHelper;
 import org.lwjgl.glfw.GLFW;
 
 public final class PreviewViewportWidget extends ClickableWidget {
+	private static final float CAMERA_PADDING = 1.15F;
+
 	private final MinecraftClient client;
 	private final PreviewTextureLibrary textureLibrary;
 	private Variant variant;
@@ -93,7 +95,11 @@ public final class PreviewViewportWidget extends ClickableWidget {
 				textureLibrary.texture(texture.getKey(), texture.getValue())
 			);
 		}
-		float scale = Math.max(1.0F, Math.min(getWidth(), getHeight()) / 24.0F) * zoom;
+		CameraFrame frame = CameraFrame.forVariant(variant);
+		float scale = Math.max(
+			1.0F,
+			Math.min(getWidth(), getHeight()) / (frame.diagonal() * CAMERA_PADDING)
+		) * zoom;
 		context.state.addSpecialElement(new PreviewGuiElementRenderState(
 			variant,
 			textures,
@@ -101,6 +107,9 @@ public final class PreviewViewportWidget extends ClickableWidget {
 			pitch,
 			panX,
 			panY,
+			frame.centerX(),
+			frame.centerY(),
+			frame.centerZ(),
 			getX(),
 			getY(),
 			getRight(),
@@ -176,6 +185,44 @@ public final class PreviewViewportWidget extends ClickableWidget {
 	@Override
 	protected void appendClickableNarrations(NarrationMessageBuilder builder) {
 		appendDefaultNarrations(builder);
+	}
+
+	private record CameraFrame(float centerX, float centerY, float centerZ, float diagonal) {
+		private static CameraFrame forVariant(Variant variant) {
+			float minX = Float.POSITIVE_INFINITY;
+			float minY = Float.POSITIVE_INFINITY;
+			float minZ = Float.POSITIVE_INFINITY;
+			float maxX = Float.NEGATIVE_INFINITY;
+			float maxY = Float.NEGATIVE_INFINITY;
+			float maxZ = Float.NEGATIVE_INFINITY;
+
+			for (dev.arcn.craftstudio.preview.domain.PreviewScene.Face face : variant.faces()) {
+				for (dev.arcn.craftstudio.preview.domain.PreviewScene.Vertex vertex : face.vertices()) {
+					minX = Math.min(minX, vertex.x());
+					minY = Math.min(minY, vertex.y());
+					minZ = Math.min(minZ, vertex.z());
+					maxX = Math.max(maxX, vertex.x());
+					maxY = Math.max(maxY, vertex.y());
+					maxZ = Math.max(maxZ, vertex.z());
+				}
+			}
+
+			if (!Float.isFinite(minX)) {
+				return new CameraFrame(8.0F, 8.0F, 8.0F, 16.0F);
+			}
+			float width = maxX - minX;
+			float height = maxY - minY;
+			float depth = maxZ - minZ;
+			float diagonal = Math.max(1.0F, MathHelper.sqrt(
+				width * width + height * height + depth * depth
+			));
+			return new CameraFrame(
+				(minX + maxX) / 2.0F,
+				(minY + maxY) / 2.0F,
+				(minZ + maxZ) / 2.0F,
+				diagonal
+			);
+		}
 	}
 
 }
