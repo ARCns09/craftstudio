@@ -12,6 +12,8 @@ import dev.arcn.craftstudio.graph.resolver.BlockDependencyResolver;
 import dev.arcn.craftstudio.graph.resolver.ItemDependencyResolver;
 import dev.arcn.craftstudio.platform.filesystem.AtomicFileWriter;
 import dev.arcn.craftstudio.platform.paths.WorkspacePaths;
+import dev.arcn.craftstudio.preview.application.PreviewService;
+import dev.arcn.craftstudio.preview.domain.PreviewScene;
 import dev.arcn.craftstudio.project.application.BundleService;
 import dev.arcn.craftstudio.project.application.ProjectService;
 import dev.arcn.craftstudio.project.domain.BundleOperationResult;
@@ -30,6 +32,7 @@ import dev.arcn.craftstudio.project.infrastructure.RecentProjectRegistry;
 import dev.arcn.craftstudio.resource.application.AssetSource;
 import dev.arcn.craftstudio.resource.domain.ResourcePath;
 import dev.arcn.craftstudio.resource.infrastructure.filesystem.ProjectAssetSource;
+import dev.arcn.craftstudio.resource.infrastructure.LayeredPreviewAssetSource;
 import dev.arcn.craftstudio.resource.infrastructure.minecraft.VanillaAssetSource;
 import dev.arcn.craftstudio.version.TargetVersionManifest;
 import java.io.IOException;
@@ -41,6 +44,7 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -54,6 +58,8 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.util.Identifier;
 
 public final class CraftStudioClientContext implements AutoCloseable {
+	private static final int MAX_PREVIEW_CACHE_ENTRIES = 32;
+
 	private final WorkspacePaths workspacePaths;
 	private final ProjectService projectService;
 	private final BundleService bundleService;
@@ -62,13 +68,17 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private final VanillaAssetSource vanillaAssetSource;
 	private final BlockDependencyResolver blockDependencyResolver;
 	private final ItemDependencyResolver itemDependencyResolver;
+	private final String targetVersion;
 	private final ExecutorService backgroundExecutor;
 	private final ConcurrentHashMap<String, CompletableFuture<AssetResolutionResult>> blockResolutionCache =
 		new ConcurrentHashMap<>();
 	private final ConcurrentHashMap<String, CompletableFuture<AssetResolutionResult>> itemResolutionCache =
 		new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<String, CompletableFuture<PreviewScene>> previewCache =
+		new ConcurrentHashMap<>();
 	private final AtomicLong recentProjectsRevision = new AtomicLong();
 	private final AtomicLong catalogRevision = new AtomicLong();
+	private final AtomicLong previewRevision = new AtomicLong();
 
 	private volatile List<RecentProjectView> recentProjects = List.of();
 	private volatile CraftStudioProject activeProject;
@@ -86,7 +96,8 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		MinecraftVanillaCatalogAdapter catalogAdapter,
 		VanillaAssetSource vanillaAssetSource,
 		BlockDependencyResolver blockDependencyResolver,
-		ItemDependencyResolver itemDependencyResolver
+		ItemDependencyResolver itemDependencyResolver,
+		String targetVersion
 	) {
 		this.workspacePaths = workspacePaths;
 		this.projectService = projectService;
@@ -96,6 +107,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		this.vanillaAssetSource = vanillaAssetSource;
 		this.blockDependencyResolver = blockDependencyResolver;
 		this.itemDependencyResolver = itemDependencyResolver;
+		this.targetVersion = targetVersion;
 		this.backgroundExecutor = Executors.newFixedThreadPool(2, Thread.ofPlatform()
 			.name("craftstudio-worker-", 0)
 			.factory());
@@ -139,7 +151,8 @@ public final class CraftStudioClientContext implements AutoCloseable {
 			new MinecraftVanillaCatalogAdapter(),
 			vanillaAssets,
 			new BlockDependencyResolver(vanillaAssets, target.minecraftVersion()),
-			new ItemDependencyResolver(vanillaAssets, target.minecraftVersion())
+			new ItemDependencyResolver(vanillaAssets, target.minecraftVersion()),
+			target.minecraftVersion()
 		);
 	}
 
@@ -309,6 +322,73 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		});
 	}
 
+	public CompletableFuture<PreviewScene> createPreview(AssetResolutionResult catalogResolution) {
+		Objects.requireNonNull(catalogResolution, "catalogResolution");
+		CraftStudioProject project = activeProject;
+		AssetSource projectSource = project == null ? null : new ProjectAssetSource(project);
+		LayeredPreviewAssetSource effectiveSource = new LayeredPreviewAssetSource(
+			projectSource,
+			vanillaAssetSource
+		);
+		String cacheKey = previewRevision.get()
+			+ "|"
+			+ effectiveSource.revision()
+			+ "|"
+			+ catalogResolution.root().kind()
+			+ "|"
+			+ catalogResolution.root().identifier();
+		if (previewCache.size() >= MAX_PREVIEW_CACHE_ENTRIES
+			&& !previewCache.containsKey(cacheKey)) {
+			previewCache.clear();
+		}
+		return previewCache.computeIfAbsent(cacheKey, ignored -> {
+			CompletableFuture<PreviewScene> future = CompletableFuture.supplyAsync(() -> {
+				AssetResolutionResult effectiveResolution = switch (catalogResolution.root().kind()) {
+					case BLOCK -> new BlockDependencyResolver(
+						effectiveSource,
+						targetVersion
+					).resolve(catalogResolution.root());
+					case ITEM -> new ItemDependencyResolver(
+						effectiveSource,
+						targetVersion
+					).resolve(catalogResolution.root());
+				};
+				return new PreviewService(effectiveSource, targetVersion)
+					.createScene(effectiveResolution);
+			}, backgroundExecutor);
+			future.whenComplete((scene, failure) -> {
+				if (failure != null) {
+					previewCache.remove(cacheKey, future);
+					CraftStudio.LOGGER.error(
+						"Preview preparation failed asset_id={} operation=preview_prepare",
+						catalogResolution.root().identifier(),
+						failure
+					);
+				} else {
+					long faceCount = scene.variants().stream()
+						.flatMap(variant -> variant.faces().stream())
+						.count();
+					CraftStudio.LOGGER.info(
+						"Preview prepared asset_id={} variant_count={} face_count={} diagnostic_count={} source_revision={} operation=preview_prepare",
+						scene.root().identifier(),
+						scene.variants().size(),
+						faceCount,
+						scene.diagnostics().size(),
+						scene.sourceRevision()
+					);
+				}
+			});
+			return future;
+		});
+	}
+
+	public CompletableFuture<PreviewScene> refreshPreview(
+		AssetResolutionResult catalogResolution
+	) {
+		invalidatePreviewCache();
+		return createPreview(catalogResolution);
+	}
+
 	public CompletableFuture<CopyPlan> createCopyPlan(
 		AssetResolutionResult resolution,
 		SelectionMode mode,
@@ -473,6 +553,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private void recordOpenedProject(CraftStudioProject project) {
 		activeProject = project;
 		activeProjectSource = new ProjectAssetSource(project);
+		invalidatePreviewCache();
 		try {
 			setRecentProjects(recentProjectRegistry.touch(project, Instant.now()));
 		} catch (IOException exception) {
@@ -499,6 +580,12 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		}
 		activeProject = project;
 		activeProjectSource = new ProjectAssetSource(project);
+		invalidatePreviewCache();
+	}
+
+	private void invalidatePreviewCache() {
+		previewRevision.incrementAndGet();
+		previewCache.clear();
 	}
 
 	private AssetKey selectedRootKey(ProjectMetadata.SelectedRoot root) {

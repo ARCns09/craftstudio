@@ -96,6 +96,14 @@ tasks.register("bundleServiceTest", JavaExec) {
 	mainClass = "dev.arcn.craftstudio.project.BundleServiceTest"
 }
 
+tasks.register("previewServiceTest", JavaExec) {
+	group = "verification"
+	description = "Runs dependency-free layered preview and model baking tests."
+	dependsOn testClasses
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = "dev.arcn.craftstudio.preview.PreviewServiceTest"
+}
+
 tasks.named("test") {
 	failOnNoDiscoveredTests = false
 }
@@ -105,7 +113,8 @@ check.dependsOn projectFoundationTest,
 	resourceSourceTest,
 	blockResolverTest,
 	itemResolverTest,
-	bundleServiceTest
+	bundleServiceTest,
+	previewServiceTest
 
 java {
 	// Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task

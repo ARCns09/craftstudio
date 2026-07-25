@@ -84,10 +84,10 @@ public final class AssetDetailsScreen extends Screen {
 		int margin = getMargin();
 		int contentWidth = width - margin * 2;
 		int footerY = height - margin - BUTTON_HEIGHT;
-		boolean showActions = context.activeProject() != null;
+		boolean showProjectActions = context.activeProject() != null;
 		int firstActionY = footerY - 48;
 		int secondActionY = footerY - 24;
-		int statusY = showActions ? firstActionY - 12 : footerY - 12;
+		int statusY = showProjectActions ? firstActionY - 12 : secondActionY - 12;
 		int rowsY = getRowsY();
 		detailList = new DependencyTreeWidget(
 			margin,
@@ -114,8 +114,8 @@ public final class AssetDetailsScreen extends Screen {
 			).build()
 		);
 
-		if (showActions) {
-			int gap = CraftStudioTheme.SPACE_2;
+		int gap = CraftStudioTheme.SPACE_2;
+		if (showProjectActions) {
 			int thirdWidth = (contentWidth - gap * 2) / 3;
 			ButtonWidget complete = ButtonWidget.builder(
 				Text.translatable("screen.craftstudio.bundle.add_complete"),
@@ -146,24 +146,41 @@ public final class AssetDetailsScreen extends Screen {
 			custom.active = canMaterialize();
 			addDrawableChild(custom);
 
-			int halfWidth = (contentWidth - gap) / 2;
+			ButtonWidget preview = ButtonWidget.builder(
+				Text.translatable("screen.craftstudio.preview.open"),
+				button -> beginPreview()
+			).dimensions(margin, secondActionY, thirdWidth, BUTTON_HEIGHT).build();
+			preview.active = canPreview();
+			addDrawableChild(preview);
 			ButtonWidget restore = ButtonWidget.builder(
 				Text.translatable("screen.craftstudio.bundle.restore"),
 				button -> confirmRestore()
-			).dimensions(margin, secondActionY, halfWidth, BUTTON_HEIGHT).build();
+			).dimensions(
+				margin + thirdWidth + gap,
+				secondActionY,
+				thirdWidth,
+				BUTTON_HEIGHT
+			).build();
 			restore.active = canChangeSelectedRoot();
 			addDrawableChild(restore);
 			ButtonWidget remove = ButtonWidget.builder(
 				Text.translatable("screen.craftstudio.bundle.remove"),
 				button -> beginRemovalPlan()
 			).dimensions(
-				margin + halfWidth + gap,
+				margin + (thirdWidth + gap) * 2,
 				secondActionY,
-				halfWidth,
+				contentWidth - thirdWidth * 2 - gap * 2,
 				BUTTON_HEIGHT
 			).build();
 			remove.active = canChangeSelectedRoot();
 			addDrawableChild(remove);
+		} else {
+			ButtonWidget preview = ButtonWidget.builder(
+				Text.translatable("screen.craftstudio.preview.open"),
+				button -> beginPreview()
+			).dimensions(margin, secondActionY, contentWidth, BUTTON_HEIGHT).build();
+			preview.active = canPreview();
+			addDrawableChild(preview);
 		}
 	}
 
@@ -223,7 +240,7 @@ public final class AssetDetailsScreen extends Screen {
 			textRenderer,
 			statusText(),
 			width / 2,
-			height - margin - BUTTON_HEIGHT - (context.activeProject() == null ? 12 : 60),
+			height - margin - BUTTON_HEIGHT - (context.activeProject() == null ? 36 : 60),
 			operationFailed || resolutionError != null
 				? CraftStudioTheme.ERROR
 				: operationBusy ? CraftStudioTheme.INFORMATION : CraftStudioTheme.TEXT_MUTED
@@ -403,6 +420,28 @@ public final class AssetDetailsScreen extends Screen {
 			}, client);
 	}
 
+	private void beginPreview() {
+		if (!canPreview()) {
+			return;
+		}
+		operationBusy = true;
+		operationFailed = false;
+		operationMessage = Text.translatable("screen.craftstudio.preview.preparing");
+		clearAndInit();
+		context.createPreview(resolution).whenCompleteAsync((scene, failure) -> {
+			operationBusy = false;
+			if (failure == null) {
+				operationMessage = null;
+				client.setScreen(new PreviewScreen(context, this, resolution, scene));
+			} else {
+				showFailure(failure);
+				if (client.currentScreen == this) {
+					clearAndInit();
+				}
+			}
+		}, client);
+	}
+
 	private void confirmRestore() {
 		List<String> files = resolvedPackPaths();
 		client.setScreen(new BundleConfirmationScreen(
@@ -497,6 +536,10 @@ public final class AssetDetailsScreen extends Screen {
 		return !operationBusy
 			&& resolution != null
 			&& !resolution.hasErrors();
+	}
+
+	private boolean canPreview() {
+		return !operationBusy && resolution != null;
 	}
 
 	private boolean canChangeSelectedRoot() {

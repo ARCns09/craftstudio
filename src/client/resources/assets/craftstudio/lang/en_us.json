@@ -84,5 +84,19 @@
 	"screen.craftstudio.bundle.remove_title": "Remove Selected Root",
 	"screen.craftstudio.bundle.remove_warning": "Edited and shared files will be kept.",
 	"screen.craftstudio.bundle.removing": "Backing up and removing safe files...",
-	"screen.craftstudio.bundle.removed": "Root removed · %s files removed · %s safely kept"
+	"screen.craftstudio.bundle.removed": "Root removed · %s files removed · %s safely kept",
+	"screen.craftstudio.preview.open": "Open Preview",
+	"screen.craftstudio.preview.preparing": "Preparing layered project preview...",
+	"screen.craftstudio.preview.title": "CraftStudio Preview",
+	"screen.craftstudio.preview.viewport": "Interactive model preview",
+	"screen.craftstudio.preview.unavailable": "Standard preview unavailable",
+	"screen.craftstudio.preview.mode_block": "Mode: Block",
+	"screen.craftstudio.preview.mode_item": "Mode: Inventory",
+	"screen.craftstudio.preview.previous": "Previous Variant",
+	"screen.craftstudio.preview.next": "Next Variant",
+	"screen.craftstudio.preview.reset_camera": "Reset Camera",
+	"screen.craftstudio.preview.refresh": "Refresh Preview",
+	"screen.craftstudio.preview.refreshing": "Rebuilding graph and preview from project → vanilla...",
+	"screen.craftstudio.preview.missing_faces": "%s unresolved faces use the missing-texture diagnostic",
+	"screen.craftstudio.preview.ready": "%s faces · %s project texture overrides"
 }
