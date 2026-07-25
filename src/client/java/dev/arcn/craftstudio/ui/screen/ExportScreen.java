@@ -26,7 +26,7 @@ public final class ExportScreen extends Screen {
 	private final CraftStudioClientContext context;
 	private final Screen parent;
 	private ValidationReport validation;
-	private ExportType type = ExportType.ZIP;
+	private ExportType type = ExportType.CURRENT_INSTANCE;
 	private String exportName;
 	private String destination;
 	private String customDestination;
@@ -89,7 +89,7 @@ public final class ExportScreen extends Screen {
 		destinationField.setMaxLength(2048);
 		destinationField.setChangedListener(value -> {
 			destination = value;
-			if (type != ExportType.CURRENT_INSTANCE) {
+			if (type == ExportType.CUSTOM_LOCATION) {
 				customDestination = value;
 			}
 		});
@@ -225,9 +225,8 @@ public final class ExportScreen extends Screen {
 
 	private void cycleType() {
 		type = switch (type) {
-			case ZIP -> ExportType.FOLDER;
-			case FOLDER -> ExportType.CURRENT_INSTANCE;
-			case CURRENT_INSTANCE -> ExportType.ZIP;
+			case CURRENT_INSTANCE -> ExportType.CUSTOM_LOCATION;
+			case CUSTOM_LOCATION -> ExportType.CURRENT_INSTANCE;
 		};
 		status = null;
 		result = null;
@@ -237,6 +236,9 @@ public final class ExportScreen extends Screen {
 	private void beginExport() {
 		ExportRequest request;
 		try {
+			if (destination.isBlank()) {
+				throw new IllegalArgumentException("Choose a ZIP destination folder.");
+			}
 			Path destinationRoot = Path.of(destination.strip());
 			request = new ExportRequest(
 				type,
@@ -348,9 +350,8 @@ public final class ExportScreen extends Screen {
 	private Text typeLabel() {
 		return Text.translatable(
 			switch (type) {
-				case ZIP -> "screen.craftstudio.export.type_zip";
-				case FOLDER -> "screen.craftstudio.export.type_folder";
 				case CURRENT_INSTANCE -> "screen.craftstudio.export.type_instance";
+				case CUSTOM_LOCATION -> "screen.craftstudio.export.type_custom";
 			}
 		);
 	}

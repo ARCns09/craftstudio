@@ -1,7 +1,6 @@
 package dev.arcn.craftstudio.export.domain;
 
 public enum ExportType {
-	ZIP,
-	FOLDER,
-	CURRENT_INSTANCE
+	CURRENT_INSTANCE,
+	CUSTOM_LOCATION
 }

@@ -31,6 +31,7 @@ public final class ProjectFoundationTest {
 		Path temporaryRoot = Files.createTempDirectory("craftstudio-project-foundation-");
 		try {
 			testCreateAndReopenProject(temporaryRoot);
+			testLegacyPackMetadataMigration(temporaryRoot);
 			testUnsafeAndExistingDestinationsAreRejected(temporaryRoot);
 			testRecentProjectsRemainPersistent(temporaryRoot);
 			System.out.println("Project foundation tests passed.");
@@ -82,6 +83,16 @@ public final class ProjectFoundationTest {
 			packMetadata.getAsJsonObject("pack").get("pack_format").getAsInt(),
 			"pack format"
 		);
+		assertEquals(
+			75,
+			packMetadata.getAsJsonObject("pack").get("min_format").getAsInt(),
+			"minimum pack format"
+		);
+		assertEquals(
+			75,
+			packMetadata.getAsJsonObject("pack").get("max_format").getAsInt(),
+			"maximum pack format"
+		);
 		assertTrue(
 			!Files.exists(created.packRoot().resolve("craftstudio.project.json")),
 			"project metadata must remain outside pack root"
@@ -94,6 +105,37 @@ public final class ProjectFoundationTest {
 		CraftStudioProject reopened = service.openProject(created.root());
 		assertEquals(created.metadata().projectId(), reopened.metadata().projectId(), "reopened project ID");
 		assertEquals(created.root(), reopened.root(), "reopened project root");
+	}
+
+	private static void testLegacyPackMetadataMigration(Path temporaryRoot) throws Exception {
+		ProjectService service = createService();
+		CraftStudioProject project = service.createProject(new ProjectCreationRequest(
+			"Legacy Metadata",
+			"legacy-metadata",
+			"Preserve this description",
+			"ARCn09",
+			temporaryRoot.resolve("legacy-workspace")
+		));
+		Path metadataPath = project.packRoot().resolve("pack.mcmeta");
+		JsonObject metadata = JsonParser.parseString(
+			Files.readString(metadataPath, StandardCharsets.UTF_8)
+		).getAsJsonObject();
+		JsonObject pack = metadata.getAsJsonObject("pack");
+		pack.remove("min_format");
+		pack.remove("max_format");
+		Files.writeString(metadataPath, metadata.toString(), StandardCharsets.UTF_8);
+
+		service.openProject(project.root());
+		JsonObject migratedPack = JsonParser.parseString(
+			Files.readString(metadataPath, StandardCharsets.UTF_8)
+		).getAsJsonObject().getAsJsonObject("pack");
+		assertEquals(75, migratedPack.get("min_format").getAsInt(), "migrated minimum format");
+		assertEquals(75, migratedPack.get("max_format").getAsInt(), "migrated maximum format");
+		assertEquals(
+			"Preserve this description",
+			migratedPack.get("description").getAsString(),
+			"migration preserves description"
+		);
 	}
 
 	private static void testUnsafeAndExistingDestinationsAreRejected(Path temporaryRoot)

@@ -144,6 +144,15 @@ public final class ProjectService {
 			|| !Files.isRegularFile(packMetadata)) {
 			throw new ProjectOperationException("Project pack root is incomplete: " + packRoot);
 		}
+		try {
+			packMetadataWriter.addRequiredFormatRangeToLegacyMetadata(packRoot, target);
+		} catch (IOException exception) {
+			throw new ProjectOperationException(
+				"Could not update legacy pack metadata for Minecraft "
+					+ target.minecraftVersion() + ".",
+				exception
+			);
+		}
 		return new CraftStudioProject(projectRoot, metadata);
 	}
 

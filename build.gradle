@@ -114,7 +114,7 @@ tasks.register("liveReloadTest", JavaExec) {
 
 tasks.register("validationExportTest", JavaExec) {
 	group = "verification"
-	description = "Runs validation, folder/ZIP export, installation, report, and overwrite safety tests."
+	description = "Runs validation, ZIP export destinations, installation, report, and overwrite safety tests."
 	dependsOn testClasses
 	classpath = sourceSets.test.runtimeClasspath
 	mainClass = "dev.arcn.craftstudio.export.ValidationExportTest"

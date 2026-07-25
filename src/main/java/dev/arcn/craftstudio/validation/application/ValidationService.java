@@ -181,6 +181,19 @@ public final class ValidationService {
 	}
 
 	private void validatePackPath(String packPath, ValidationState state) {
+		if (packPath.equals("craftstudio.project.json")
+			|| packPath.equals(".craftstudio")
+			|| packPath.startsWith(".craftstudio/")) {
+			state.error(
+				"PROJECT_INTERNAL_IN_PACK",
+				"CraftStudio project metadata must not be included in an exported pack.",
+				packPath,
+				"",
+				List.of(),
+				"Move the project metadata outside the pack folder."
+			);
+			return;
+		}
 		if (packPath.equals("pack.mcmeta") || packPath.equals("pack.png")) {
 			return;
 		}
@@ -394,43 +407,9 @@ public final class ValidationService {
 			return;
 		}
 		JsonObject pack = metadata.getAsJsonObject().getAsJsonObject("pack");
-		if (!pack.has("pack_format")
-			|| !pack.get("pack_format").isJsonPrimitive()
-			|| !pack.get("pack_format").getAsJsonPrimitive().isNumber()) {
-			state.error(
-				"PACK_FORMAT_MISSING",
-				"pack.mcmeta must contain a numeric pack_format.",
-				"pack.mcmeta",
-				"$.pack.pack_format",
-				List.of(),
-				"Regenerate pack.mcmeta."
-			);
-		} else {
-			try {
-				int format = pack.get("pack_format").getAsInt();
-				if (format != target.resourcePackFormat()) {
-					state.error(
-						"PACK_FORMAT_INCORRECT",
-						"Pack format is " + format + " but Minecraft "
-							+ target.minecraftVersion() + " requires "
-							+ target.resourcePackFormat() + ".",
-						"pack.mcmeta",
-						"$.pack.pack_format",
-						List.of(),
-						"Regenerate pack.mcmeta for Minecraft " + target.minecraftVersion() + "."
-					);
-				}
-			} catch (NumberFormatException exception) {
-				state.error(
-					"PACK_FORMAT_INVALID",
-					"pack_format must be an integer.",
-					"pack.mcmeta",
-					"$.pack.pack_format",
-					List.of(),
-					"Regenerate pack.mcmeta."
-				);
-			}
-		}
+		validateRequiredPackFormat(state, pack);
+		validateRequiredPackRange(state, pack, "min_format");
+		validateRequiredPackRange(state, pack, "max_format");
 		if (!pack.has("description")) {
 			state.error(
 				"PACK_DESCRIPTION_MISSING",
@@ -440,6 +419,114 @@ public final class ValidationService {
 				List.of(),
 				"Regenerate pack.mcmeta."
 			);
+		}
+	}
+
+	private void validateRequiredPackFormat(
+		ValidationState state,
+		JsonObject pack
+	) {
+		String field = "pack_format";
+		String jsonPath = "$.pack." + field;
+		if (!pack.has(field)
+			|| !pack.get(field).isJsonPrimitive()
+			|| !pack.get(field).getAsJsonPrimitive().isNumber()) {
+			state.error(
+				"PACK_" + field.toUpperCase(Locale.ROOT) + "_MISSING",
+				field + " must be present and numeric for Minecraft " + target.minecraftVersion() + ".",
+				"pack.mcmeta",
+				jsonPath,
+				List.of(),
+				"Regenerate pack.mcmeta for Minecraft " + target.minecraftVersion() + "."
+			);
+			return;
+		}
+		try {
+			int format = pack.get(field).getAsBigDecimal().intValueExact();
+			if (format != target.resourcePackFormat()) {
+				state.error(
+					"PACK_" + field.toUpperCase(Locale.ROOT) + "_INCORRECT",
+					field + " is " + format + " but must be "
+						+ target.resourcePackFormat() + " for Minecraft "
+						+ target.minecraftVersion() + ".",
+					"pack.mcmeta",
+					jsonPath,
+					List.of(),
+					"Regenerate pack.mcmeta for Minecraft " + target.minecraftVersion() + "."
+				);
+			}
+		} catch (ArithmeticException | NumberFormatException exception) {
+			state.error(
+				"PACK_" + field.toUpperCase(Locale.ROOT) + "_INVALID",
+				field + " must be an integer.",
+				"pack.mcmeta",
+				jsonPath,
+				List.of(),
+				"Regenerate pack.mcmeta for Minecraft " + target.minecraftVersion() + "."
+			);
+		}
+	}
+
+	private void validateRequiredPackRange(
+		ValidationState state,
+		JsonObject pack,
+		String field
+	) {
+		String jsonPath = "$.pack." + field;
+		if (!pack.has(field)) {
+			state.error(
+				"PACK_" + field.toUpperCase(Locale.ROOT) + "_MISSING",
+				field + " is mandatory for Minecraft " + target.minecraftVersion() + ".",
+				"pack.mcmeta",
+				jsonPath,
+				List.of(),
+				"Regenerate pack.mcmeta for Minecraft " + target.minecraftVersion() + "."
+			);
+			return;
+		}
+		int[] version = readPackVersion(pack.get(field));
+		if (version == null) {
+			state.error(
+				"PACK_" + field.toUpperCase(Locale.ROOT) + "_INVALID",
+				field + " must be an integer or a [major, minor] integer array.",
+				"pack.mcmeta",
+				jsonPath,
+				List.of(),
+				"Regenerate pack.mcmeta for Minecraft " + target.minecraftVersion() + "."
+			);
+			return;
+		}
+		if (version[0] != target.resourcePackFormat() || version[1] != 0) {
+			state.error(
+				"PACK_" + field.toUpperCase(Locale.ROOT) + "_INCORRECT",
+				field + " is " + version[0] + "." + version[1]
+					+ " but must be " + target.resourcePackFormat()
+					+ ".0 for Minecraft " + target.minecraftVersion() + ".",
+				"pack.mcmeta",
+				jsonPath,
+				List.of(),
+				"Regenerate pack.mcmeta for Minecraft " + target.minecraftVersion() + "."
+			);
+		}
+	}
+
+	private int[] readPackVersion(JsonElement element) {
+		try {
+			if (element.isJsonPrimitive() && element.getAsJsonPrimitive().isNumber()) {
+				return new int[] { element.getAsBigDecimal().intValueExact(), 0 };
+			}
+			if (!element.isJsonArray()
+				|| element.getAsJsonArray().isEmpty()
+				|| element.getAsJsonArray().size() > 2) {
+				return null;
+			}
+			int major = element.getAsJsonArray().get(0).getAsBigDecimal().intValueExact();
+			int minor = element.getAsJsonArray().size() == 2
+				? element.getAsJsonArray().get(1).getAsBigDecimal().intValueExact()
+				: 0;
+			return major < 0 || minor < 0 ? null : new int[] { major, minor };
+		} catch (RuntimeException exception) {
+			return null;
 		}
 	}
 

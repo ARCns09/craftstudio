@@ -58,10 +58,12 @@ public final class ValidationExportTest {
 			TestServices services = createServices();
 			CraftStudioProject project = createCompleteFurnaceProject(temporaryRoot, services);
 			testValidProjectValidation(project, services);
-			testFolderZipAndInstanceExports(temporaryRoot, project, services);
+			testModernPackFormatValidation(project, services);
+			testZipDestinations(temporaryRoot, project, services);
 			testSafeOverwrite(temporaryRoot, project, services);
 			testInvalidProjectBlocksExport(temporaryRoot, project, services);
 			testMissingSelectedDependency(project, services);
+			testProjectInternalsBlockExport(project, services);
 			testZipEntrySafety();
 			testExportNameSafety(temporaryRoot);
 			System.out.println("Validation and export tests passed.");
@@ -93,49 +95,92 @@ public final class ValidationExportTest {
 		);
 	}
 
-	private static void testFolderZipAndInstanceExports(
+	private static void testModernPackFormatValidation(
+		CraftStudioProject project,
+		TestServices services
+	) throws Exception {
+		Path metadataPath = project.packRoot().resolve("pack.mcmeta");
+		String original = Files.readString(metadataPath, StandardCharsets.UTF_8);
+		JsonObject metadata = JsonParser.parseString(original).getAsJsonObject();
+		JsonObject pack = metadata.getAsJsonObject("pack");
+		pack.remove("max_format");
+		Files.writeString(metadataPath, metadata.toString(), StandardCharsets.UTF_8);
+		ValidationReport missingRange = services.validationService().validateProject(
+			project,
+			new OperationCancellation()
+		);
+		assertTrue(
+			missingRange.issues().stream().anyMatch(issue ->
+				issue.code().equals("PACK_MAX_FORMAT_MISSING")),
+			"missing modern format range blocks export"
+		);
+
+		pack.add("min_format", JsonParser.parseString("[75, 0]"));
+		pack.add("max_format", JsonParser.parseString("[75, 0]"));
+		Files.writeString(metadataPath, metadata.toString(), StandardCharsets.UTF_8);
+		ValidationReport arrayRange = services.validationService().validateProject(
+			project,
+			new OperationCancellation()
+		);
+		assertEquals(
+			0L,
+			arrayRange.count(ValidationSeverity.ERROR),
+			"valid major/minor format arrays"
+		);
+		Files.writeString(metadataPath, original, StandardCharsets.UTF_8);
+	}
+
+	private static void testZipDestinations(
 		Path temporaryRoot,
 		CraftStudioProject project,
 		TestServices services
 	) throws Exception {
-		Path outputRoot = temporaryRoot.resolve("outputs");
-		ExportResult folder = services.exportService().export(
+		Path customOutputRoot = temporaryRoot.resolve("custom-output");
+		ExportResult custom = services.exportService().export(
 			project,
 			new ExportRequest(
-				ExportType.FOLDER,
-				outputRoot,
-				"Furnace Folder",
+				ExportType.CUSTOM_LOCATION,
+				customOutputRoot,
+				"Custom Furnace",
 				ExistingOutputPolicy.CANCEL
 			),
 			new OperationCancellation()
 		);
-		assertTrue(Files.isRegularFile(folder.output().resolve("pack.mcmeta")), "folder root metadata");
-		assertTrue(!Files.exists(folder.output().resolve("craftstudio.project.json")), "no project metadata");
-		assertTrue(!Files.exists(folder.output().resolve(".craftstudio")), "no project internals");
-		assertTrue(Files.isRegularFile(folder.report()), "folder export report");
-
-		ExportResult zip = services.exportService().export(
-			project,
-			new ExportRequest(
-				ExportType.ZIP,
-				outputRoot,
-				"Furnace ZIP",
-				ExistingOutputPolicy.CANCEL
-			),
-			new OperationCancellation()
+		assertEquals(
+			customOutputRoot.resolve("Custom Furnace.zip").toAbsolutePath(),
+			custom.output(),
+			"custom ZIP path"
 		);
-		try (ZipFile archive = new ZipFile(zip.output().toFile())) {
+		try (ZipFile archive = new ZipFile(custom.output().toFile())) {
 			assertTrue(archive.getEntry("pack.mcmeta") != null, "ZIP root metadata");
-			assertTrue(archive.getEntry("Furnace ZIP/pack.mcmeta") == null, "no enclosing ZIP folder");
+			assertTrue(archive.getEntry("Custom Furnace/pack.mcmeta") == null, "no enclosing ZIP folder");
 			assertTrue(archive.getEntry("craftstudio.project.json") == null, "ZIP excludes project metadata");
+			assertTrue(
+				archive.stream().noneMatch(entry -> entry.getName().startsWith(".craftstudio/")),
+				"ZIP excludes project internals"
+			);
+			JsonObject packMetadata = JsonParser.parseString(
+				new String(
+					archive.getInputStream(archive.getEntry("pack.mcmeta")).readAllBytes(),
+					StandardCharsets.UTF_8
+				)
+			).getAsJsonObject().getAsJsonObject("pack");
+			assertEquals(75, packMetadata.get("pack_format").getAsInt(), "ZIP pack format");
+			assertEquals(75, packMetadata.get("min_format").getAsInt(), "ZIP minimum format");
+			assertEquals(75, packMetadata.get("max_format").getAsInt(), "ZIP maximum format");
 		}
 		JsonObject report = JsonParser.parseString(Files.readString(
-			zip.report(),
+			custom.report(),
 			StandardCharsets.UTF_8
 		)).getAsJsonObject();
 		assertEquals("1.21.11", report.get("minecraft_version").getAsString(), "report target");
-		assertEquals(zip.output().toString(), report.get("output_path").getAsString(), "report output");
-		assertEquals(zip.sha256(), report.get("sha256").getAsString(), "report hash");
+		assertEquals(
+			"custom_location",
+			report.get("export_type").getAsString(),
+			"report destination type"
+		);
+		assertEquals(custom.output().toString(), report.get("output_path").getAsString(), "report output");
+		assertEquals(custom.sha256(), report.get("sha256").getAsString(), "report hash");
 
 		Path resourcePacks = temporaryRoot.resolve("game/resourcepacks");
 		ExportResult installed = services.exportService().export(
@@ -149,9 +194,15 @@ public final class ValidationExportTest {
 			new OperationCancellation()
 		);
 		assertTrue(
-			Files.isRegularFile(installed.output().resolve("pack.mcmeta")),
-			"current-instance folder install"
+			Files.isRegularFile(installed.output())
+				&& installed.output().equals(
+					resourcePacks.resolve("Installed Furnace.zip").toAbsolutePath()
+				),
+			"current-instance ZIP install"
 		);
+		try (ZipFile archive = new ZipFile(installed.output().toFile())) {
+			assertTrue(archive.getEntry("pack.mcmeta") != null, "installed ZIP root metadata");
+		}
 	}
 
 	private static void testSafeOverwrite(
@@ -161,7 +212,7 @@ public final class ValidationExportTest {
 	) throws Exception {
 		Path outputRoot = temporaryRoot.resolve("overwrite");
 		ExportRequest initialRequest = new ExportRequest(
-			ExportType.FOLDER,
+			ExportType.CUSTOM_LOCATION,
 			outputRoot,
 			"Existing Pack",
 			ExistingOutputPolicy.CANCEL
@@ -171,8 +222,8 @@ public final class ValidationExportTest {
 			initialRequest,
 			new OperationCancellation()
 		);
-		Path marker = initial.output().resolve("existing-user-file.txt");
-		Files.writeString(marker, "keep me", StandardCharsets.UTF_8);
+		byte[] originalOutput = "existing user ZIP bytes".getBytes(StandardCharsets.UTF_8);
+		Files.write(initial.output(), originalOutput);
 		try {
 			services.exportService().export(
 				project,
@@ -181,13 +232,16 @@ public final class ValidationExportTest {
 			);
 			throw new AssertionError("Existing output should require an explicit policy.");
 		} catch (ExistingOutputException expected) {
-			assertTrue(Files.isRegularFile(marker), "cancel keeps existing output");
+			assertTrue(
+				java.util.Arrays.equals(originalOutput, Files.readAllBytes(initial.output())),
+				"cancel keeps existing output"
+			);
 		}
 
 		ExportResult replaced = services.exportService().export(
 			project,
 			new ExportRequest(
-				ExportType.FOLDER,
+				ExportType.CUSTOM_LOCATION,
 				outputRoot,
 				"Existing Pack",
 				ExistingOutputPolicy.REPLACE_WITH_BACKUP
@@ -195,14 +249,14 @@ public final class ValidationExportTest {
 			new OperationCancellation()
 		);
 		assertTrue(replaced.backup().isPresent(), "replacement reports backup");
-		try (Stream<Path> backupFiles = Files.walk(replaced.backup().orElseThrow())) {
-			assertTrue(
-				backupFiles.anyMatch(path -> path.getFileName().toString().equals("existing-user-file.txt")),
-				"backup preserves previous output"
-			);
+		Path backupPayload = replaced.backup().orElseThrow().resolve("Existing Pack.zip");
+		assertTrue(
+			java.util.Arrays.equals(originalOutput, Files.readAllBytes(backupPayload)),
+			"backup preserves previous output"
+		);
+		try (ZipFile archive = new ZipFile(replaced.output().toFile())) {
+			assertTrue(archive.getEntry("pack.mcmeta") != null, "replacement publishes verified ZIP");
 		}
-		assertTrue(!Files.exists(replaced.output().resolve("existing-user-file.txt")),
-			"published output is clean staging");
 	}
 
 	private static void testInvalidProjectBlocksExport(
@@ -227,7 +281,7 @@ public final class ValidationExportTest {
 			services.exportService().export(
 				project,
 				new ExportRequest(
-					ExportType.ZIP,
+					ExportType.CUSTOM_LOCATION,
 					blockedOutput,
 					"Broken",
 					ExistingOutputPolicy.CANCEL
@@ -261,6 +315,27 @@ public final class ValidationExportTest {
 		Files.write(texture, original);
 	}
 
+	private static void testProjectInternalsBlockExport(
+		CraftStudioProject project,
+		TestServices services
+	) throws Exception {
+		Path leakedMetadata = project.packRoot().resolve(".craftstudio/private.json");
+		Files.createDirectories(leakedMetadata.getParent());
+		Files.writeString(leakedMetadata, "{}", StandardCharsets.UTF_8);
+		ValidationReport report = services.validationService().validateProject(
+			project,
+			new OperationCancellation()
+		);
+		assertTrue(
+			report.issues().stream().anyMatch(issue ->
+				issue.code().equals("PROJECT_INTERNAL_IN_PACK")
+					&& issue.packPath().equals(".craftstudio/private.json")),
+			"project internals block export"
+		);
+		Files.delete(leakedMetadata);
+		Files.delete(leakedMetadata.getParent());
+	}
+
 	private static void testZipEntrySafety() throws Exception {
 		ZipEntrySafety.requireSafe("pack.mcmeta");
 		ZipEntrySafety.requireSafe("assets/minecraft/textures/block/furnace.png");
@@ -279,9 +354,16 @@ public final class ValidationExportTest {
 	}
 
 	private static void testExportNameSafety(Path temporaryRoot) {
+		ExportRequest normalized = new ExportRequest(
+			ExportType.CUSTOM_LOCATION,
+			temporaryRoot,
+			"Named Pack.zip",
+			ExistingOutputPolicy.CANCEL
+		);
+		assertEquals("Named Pack", normalized.exportName(), "ZIP suffix normalization");
 		try {
 			new ExportRequest(
-				ExportType.FOLDER,
+				ExportType.CUSTOM_LOCATION,
 				temporaryRoot,
 				"CON.txt",
 				ExistingOutputPolicy.CANCEL

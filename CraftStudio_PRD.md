@@ -152,7 +152,7 @@ CraftStudio solves this by presenting Minecraft objects first and file paths sec
 5. Let users choose complete, unique-only, or custom dependency extraction.
 6. Preserve correct directory structure automatically.
 7. Validate missing, malformed, or inconsistent assets.
-8. Export a valid folder or ZIP resource pack.
+8. Export a valid ZIP resource pack.
 9. Reload project changes without restarting Minecraft.
 10. Keep the first implementation maintainable and version-specific.
 
@@ -287,7 +287,7 @@ As a creator, I want errors to identify the exact broken file and dependency cha
 
 ## 7.7 Safe export
 
-As a creator, I want to export a ZIP or folder without incorrect nesting so that Minecraft recognizes the pack.
+As a creator, I want to export a ZIP without incorrect nesting so that Minecraft recognizes the pack.
 
 ---
 
@@ -472,8 +472,7 @@ Purpose: Produce usable packs.
 Included:
 
 - Validation
-- Folder export
-- ZIP export
+- ZIP export to the current instance or a custom location
 - Install into current instance
 - Manual resource reload
 - Backup before overwrite
@@ -891,10 +890,11 @@ Each issue contains:
 
 Export targets:
 
-- ZIP
-- Folder
-- Current instance resourcepacks directory
-- Previously used directory
+- Current instance `resourcepacks` directory, default
+- Custom directory
+- Previously used custom directory, later
+
+Every target receives a ZIP. CraftStudio does not publish unpacked folder exports.
 
 Options:
 
@@ -2122,7 +2122,7 @@ Save project metadata
 → Exclude CraftStudio project internals
 → Verify pack root
 → Re-run critical validation on staging
-→ Create folder or ZIP
+→ Create ZIP
 → Verify output
 → Atomically replace final output
 → Write export report
@@ -2578,7 +2578,7 @@ For crafting table and furnace examples:
 
 - Missing texture blocks export by default.
 - User can locate the broken dependency.
-- Valid project exports to folder and ZIP.
+- Valid project exports a ZIP to the current instance or a custom directory.
 - ZIP root is correct.
 - Exported pack loads in Minecraft 1.21.11.
 - Export does not include `.craftstudio` or project metadata.
@@ -2785,8 +2785,8 @@ Tasks:
 - Critical rules
 - Validation center UI
 - ZIP staging
-- Folder export
-- Current instance install
+- ZIP export to a custom location
+- ZIP install into the current instance
 - Export report
 - Safe overwrite behavior
 

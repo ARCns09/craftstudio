@@ -27,6 +27,9 @@ public record ExportRequest(
 			.toAbsolutePath()
 			.normalize();
 		exportName = Objects.requireNonNull(exportName, "exportName").strip();
+		if (exportName.toLowerCase(Locale.ROOT).endsWith(".zip")) {
+			exportName = exportName.substring(0, exportName.length() - 4).strip();
+		}
 		existingOutputPolicy = Objects.requireNonNull(
 			existingOutputPolicy,
 			"existingOutputPolicy"

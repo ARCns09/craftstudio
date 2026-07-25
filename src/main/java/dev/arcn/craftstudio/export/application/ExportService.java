@@ -9,7 +9,6 @@ import dev.arcn.craftstudio.export.domain.ExportBlockedException;
 import dev.arcn.craftstudio.export.domain.ExportException;
 import dev.arcn.craftstudio.export.domain.ExportRequest;
 import dev.arcn.craftstudio.export.domain.ExportResult;
-import dev.arcn.craftstudio.export.domain.ExportType;
 import dev.arcn.craftstudio.platform.filesystem.AtomicFileWriter;
 import dev.arcn.craftstudio.platform.task.OperationCancellation;
 import dev.arcn.craftstudio.project.domain.CraftStudioProject;
@@ -67,9 +66,7 @@ public final class ExportService {
 
 	public Path targetPath(ExportRequest request) {
 		Objects.requireNonNull(request, "request");
-		String fileName = request.type() == ExportType.ZIP
-			? request.exportName() + ".zip"
-			: request.exportName();
+		String fileName = request.exportName() + ".zip";
 		Path targetPath = request.destinationRoot().resolve(fileName).normalize();
 		if (!targetPath.getParent().equals(request.destinationRoot())) {
 			throw new IllegalArgumentException("Export target escaped its destination folder.");
@@ -116,14 +113,8 @@ public final class ExportService {
 
 			Files.createDirectories(request.destinationRoot());
 			rejectSymbolicParents(request.destinationRoot());
-			if (request.type() == ExportType.ZIP) {
-				writeZip(stagedPack, publishTemporary, cancellation);
-				verifyZip(publishTemporary);
-			} else {
-				Files.createDirectory(publishTemporary);
-				copyDirectory(stagedPack, publishTemporary, cancellation);
-				verifyFolder(publishTemporary);
-			}
+			writeZip(stagedPack, publishTemporary, cancellation);
+			verifyZip(publishTemporary);
 			cancellation.throwIfCancelled();
 
 			if (Files.exists(output, LinkOption.NOFOLLOW_LINKS)) {
@@ -140,18 +131,10 @@ public final class ExportService {
 				restoreBackupIfNeeded(output, backup);
 				throw exception;
 			}
-			if (request.type() == ExportType.ZIP) {
-				verifyZip(output);
-			} else {
-				verifyFolder(output);
-			}
+			verifyZip(output);
 
-			int fileCount = request.type() == ExportType.ZIP
-				? countZipFiles(output)
-				: countRegularFiles(output);
-			String hash = request.type() == ExportType.ZIP
-				? sha256File(output)
-				: sha256Directory(output);
+			int fileCount = countZipFiles(output);
+			String hash = sha256File(output);
 			Path reportPath = writeReport(
 				project,
 				request,
@@ -282,20 +265,6 @@ public final class ExportService {
 		}
 	}
 
-	private void verifyFolder(Path folder) throws IOException {
-		if (Files.isSymbolicLink(folder)
-			|| !Files.isRegularFile(folder.resolve("pack.mcmeta"), LinkOption.NOFOLLOW_LINKS)) {
-			throw new IOException("Exported folder does not contain pack.mcmeta at its root.");
-		}
-		try (Stream<Path> paths = Files.walk(folder)) {
-			for (Path path : paths.toList()) {
-				if (Files.isSymbolicLink(path)) {
-					throw new IOException("Exported folder contains a symbolic link.");
-				}
-			}
-		}
-	}
-
 	private void verifyZip(Path zipPath) throws IOException {
 		boolean hasPackMetadata = false;
 		try (ZipFile zip = new ZipFile(zipPath.toFile(), StandardCharsets.UTF_8)) {
@@ -303,6 +272,10 @@ public final class ExportService {
 			while (entries.hasMoreElements()) {
 				ZipEntry entry = entries.nextElement();
 				ZipEntrySafety.requireSafe(entry.getName());
+				if (entry.getName().equals("craftstudio.project.json")
+					|| entry.getName().startsWith(".craftstudio/")) {
+					throw new IOException("Exported ZIP contains CraftStudio project internals.");
+				}
 				if (entry.getName().equals("pack.mcmeta") && !entry.isDirectory()) {
 					hasPackMetadata = true;
 				}
@@ -431,14 +404,6 @@ public final class ExportService {
 			gson.toJson(report) + System.lineSeparator()
 		);
 		return reportPath;
-	}
-
-	private int countRegularFiles(Path root) throws IOException {
-		try (Stream<Path> files = Files.walk(root)) {
-			return Math.toIntExact(files
-				.filter(path -> Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS))
-				.count());
-		}
 	}
 
 	private int countZipFiles(Path zipPath) throws IOException {
