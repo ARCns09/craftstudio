@@ -14,7 +14,8 @@ import dev.arcn.craftstudio.resource.domain.SourceLayer;
 import dev.arcn.craftstudio.ui.theme.CraftStudioTheme;
 import dev.arcn.craftstudio.ui.widget.DependencyTreeWidget;
 import java.util.ArrayList;
-import java.util.HashSet;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import net.minecraft.client.MinecraftClient;
@@ -175,19 +176,42 @@ public final class AssetDetailsScreen extends Screen {
 
 	private List<DependencyTreeWidget.Row> createGraphRows(AssetResolutionResult result) {
 		List<DependencyTreeWidget.Row> resultRows = new ArrayList<>();
-		Set<String> expandedNodes = new HashSet<>();
-		expandedNodes.add(result.graph().rootNodeId());
-		appendOutgoingRows(result, result.graph().rootNodeId(), 0, expandedNodes, resultRows);
+		for (DependencyGroup group : DependencyGroup.values()) {
+			List<AssetGraphNode> groupNodes = result.graph().nodes().values().stream()
+				.filter(node -> !node.id().equals(result.graph().rootNodeId()))
+				.filter(node -> group.types().contains(node.type()))
+				.sorted(Comparator.comparing(this::nodeSortKey))
+				.toList();
+			if (groupNodes.isEmpty()) {
+				continue;
+			}
+			resultRows.add(DependencyTreeWidget.Row.section(
+				Text.literal(group.title()),
+				groupNodes.size()
+			));
+			for (AssetGraphNode node : groupNodes) {
+				resultRows.add(DependencyTreeWidget.Row.dependency(
+					Text.literal(nodeTitle(node)),
+					Text.literal(nodeTypeLabel(node.type())),
+					nodePath(node),
+					Text.literal(dependencyReason(result, node)),
+					Text.literal(sourceLabel(node.sourceLayer())),
+					node.sourceLayer() == SourceLayer.MISSING
+						? CraftStudioTheme.ERROR
+						: sourceColor(node.sourceLayer())
+				));
+			}
+		}
 		if (!result.issues().isEmpty()) {
-			resultRows.add(DependencyTreeWidget.Row.notice(
+			resultRows.add(DependencyTreeWidget.Row.section(
 				Text.translatable("screen.craftstudio.asset_details.issues"),
-				CraftStudioTheme.TEXT_PRIMARY
+				result.issues().size()
 			));
 			for (ResolutionIssue issue : result.issues()) {
 				int color = issue.severity() == ResolutionIssueSeverity.ERROR
 					? CraftStudioTheme.ERROR
 					: issue.severity() == ResolutionIssueSeverity.WARNING
-						? CraftStudioTheme.INFORMATION
+						? CraftStudioTheme.WARNING
 						: CraftStudioTheme.TEXT_MUTED;
 				resultRows.add(DependencyTreeWidget.Row.notice(
 					Text.literal("[" + issue.severity() + " " + issue.code() + "] " + issue.message()),
@@ -198,34 +222,36 @@ public final class AssetDetailsScreen extends Screen {
 		return List.copyOf(resultRows);
 	}
 
-	private void appendOutgoingRows(
-		AssetResolutionResult result,
-		String nodeId,
-		int depth,
-		Set<String> expandedNodes,
-		List<DependencyTreeWidget.Row> destination
-	) {
-		for (AssetGraphEdge edge : result.graph().outgoing(nodeId)) {
-			AssetGraphNode target = result.graph().nodes().get(edge.toNodeId());
-			boolean firstVisit = expandedNodes.add(target.id());
-			String targetName = target.packPath().isEmpty()
-				? target.namespace() + ":" + target.logicalPath()
-				: target.packPath();
-			destination.add(DependencyTreeWidget.Row.dependency(
-				depth,
-				Text.literal(nodeTypeLabel(target.type())),
-				Text.literal(relationshipLabel(edge.type(), edge.label())),
-				targetName,
-				Text.literal(sourceLabel(target.sourceLayer())),
-				target.sourceLayer() == SourceLayer.MISSING
-					? CraftStudioTheme.ERROR
-					: sourceColor(target.sourceLayer()),
-				!firstVisit
-			));
-			if (firstVisit && depth < 12) {
-				appendOutgoingRows(result, target.id(), depth + 1, expandedNodes, destination);
+	private String dependencyReason(AssetResolutionResult result, AssetGraphNode node) {
+		List<AssetGraphEdge> incoming = result.graph().edges().stream()
+			.filter(edge -> edge.toNodeId().equals(node.id()))
+			.toList();
+		boolean hasResolvedTexture = incoming.stream()
+			.anyMatch(edge -> edge.type() == GraphEdgeType.RESOLVES_TEXTURE);
+		LinkedHashSet<String> reasons = new LinkedHashSet<>();
+		for (AssetGraphEdge edge : incoming) {
+			if (edge.type() == GraphEdgeType.USES_TEXTURE_VARIABLE && hasResolvedTexture) {
+				continue;
+			}
+			AssetGraphNode sourceNode = result.graph().nodes().get(edge.fromNodeId());
+			String reason = edgeReason(edge, sourceNode);
+			if (!reason.isBlank()) {
+				reasons.add(reason);
 			}
 		}
+		if (reasons.isEmpty()) {
+			return "Resolved dependency";
+		}
+		List<String> visibleReasons = List.copyOf(reasons);
+		if (visibleReasons.size() <= 2) {
+			return String.join(" • ", visibleReasons);
+		}
+		return visibleReasons.get(0)
+			+ " • "
+			+ visibleReasons.get(1)
+			+ " • +"
+			+ (visibleReasons.size() - 2)
+			+ " more links";
 	}
 
 	private Text statusText() {
@@ -278,23 +304,47 @@ public final class AssetDetailsScreen extends Screen {
 		};
 	}
 
-	private String relationshipLabel(GraphEdgeType type, String label) {
-		String relationship = switch (type) {
-			case HAS_BLOCKSTATE -> "Block appearance";
-			case HAS_CLIENT_ITEM -> "Item representation";
-			case SELECTS_MODEL -> "Selected model";
-			case USES_MODEL -> "Uses model";
-			case INHERITS_MODEL -> "Parent model";
-			case USES_TEXTURE_VARIABLE -> "Texture variable";
-			case RESOLVES_TEXTURE -> "Resolved texture";
-			case USES_METADATA -> "Texture metadata";
-			case REQUIRES_ATLAS -> "Required atlas";
-			case SHARED_BY -> "Shared dependency";
-			case HAS_VARIANT -> "Variant";
-			case HAS_MULTIPART_CASE -> "Multipart case";
-			case USES_SPECIAL_RENDERER -> "Special renderer";
+	private String edgeReason(AssetGraphEdge edge, AssetGraphNode sourceNode) {
+		String sourceName = sourceNode == null ? "another dependency" : nodeTitle(sourceNode);
+		return switch (edge.type()) {
+			case HAS_BLOCKSTATE -> "Block appearance definition";
+			case HAS_CLIENT_ITEM -> "Inventory appearance definition";
+			case SELECTS_MODEL -> "Item branch: " + edge.label();
+			case USES_MODEL -> edge.label();
+			case INHERITS_MODEL -> "Parent of " + sourceName;
+			case USES_TEXTURE_VARIABLE -> "Texture variable in " + sourceName;
+			case RESOLVES_TEXTURE -> "Texture used by " + sourceName;
+			case USES_METADATA -> "Animation metadata for " + sourceName;
+			case REQUIRES_ATLAS -> "Atlas containing " + sourceName;
+			case SHARED_BY -> "Shared by " + sourceName;
+			case HAS_VARIANT -> "Block variant: " + edge.label();
+			case HAS_MULTIPART_CASE -> "Multipart branch: " + edge.label();
+			case USES_SPECIAL_RENDERER -> edge.label();
 		};
-		return label.isBlank() ? relationship : relationship + "  ·  " + label;
+	}
+
+	private String nodeTitle(AssetGraphNode node) {
+		if (node.type() == GraphNodeType.SPECIAL_RENDERER) {
+			return node.attributes().getOrDefault("reason", "Special renderer");
+		}
+		if (node.type() == GraphNodeType.UNKNOWN_RESOURCE) {
+			return node.attributes().getOrDefault("definition_type", "Unsupported resource");
+		}
+		if (node.packPath().isEmpty()) {
+			return node.namespace() + ":" + node.logicalPath();
+		}
+		int separator = node.packPath().lastIndexOf('/');
+		return separator < 0 ? node.packPath() : node.packPath().substring(separator + 1);
+	}
+
+	private String nodePath(AssetGraphNode node) {
+		return node.packPath().isEmpty()
+			? node.namespace() + ":" + node.logicalPath()
+			: node.packPath();
+	}
+
+	private String nodeSortKey(AssetGraphNode node) {
+		return nodePath(node).toLowerCase();
 	}
 
 	private String sourceLabel(SourceLayer sourceLayer) {
@@ -355,4 +405,42 @@ public final class AssetDetailsScreen extends Screen {
 		return width < 340 || height < 220 ? CraftStudioTheme.SPACE_2 : MARGIN;
 	}
 
+	private enum DependencyGroup {
+		DEFINITIONS(
+			"Definitions",
+			Set.of(GraphNodeType.BLOCKSTATE_FILE, GraphNodeType.CLIENT_ITEM_FILE)
+		),
+		MODELS(
+			"Models and branches",
+			Set.of(GraphNodeType.MODEL_FILE, GraphNodeType.BUILTIN_MODEL)
+		),
+		TEXTURES(
+			"Textures",
+			Set.of(GraphNodeType.TEXTURE_FILE)
+		),
+		METADATA(
+			"Metadata and atlases",
+			Set.of(GraphNodeType.TEXTURE_METADATA_FILE, GraphNodeType.ATLAS_FILE)
+		),
+		SPECIAL(
+			"Special or unsupported",
+			Set.of(GraphNodeType.SPECIAL_RENDERER, GraphNodeType.UNKNOWN_RESOURCE)
+		);
+
+		private final String title;
+		private final Set<GraphNodeType> types;
+
+		DependencyGroup(String title, Set<GraphNodeType> types) {
+			this.title = title;
+			this.types = types;
+		}
+
+		private String title() {
+			return title;
+		}
+
+		private Set<GraphNodeType> types() {
+			return types;
+		}
+	}
 }

@@ -53,7 +53,7 @@
 	"screen.craftstudio.asset_details.translation_key": "Translation key: %s",
 	"screen.craftstudio.asset_details.placeholder": "Dependency details are not resolved yet.",
 	"screen.craftstudio.asset_details.placeholder_detail": "Model, texture, state, preview, and extraction information will appear after the resolver milestones.",
-	"screen.craftstudio.asset_details.dependencies": "Resolved dependency tree",
+	"screen.craftstudio.asset_details.dependencies": "Resolved dependencies",
 	"screen.craftstudio.asset_details.resolving": "Resolving dependencies...",
 	"screen.craftstudio.asset_details.resolved": "%s nodes · %s dependencies · %s issues",
 	"screen.craftstudio.asset_details.failed": "Dependency resolution failed.",

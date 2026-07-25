@@ -13,9 +13,8 @@ import org.lwjgl.glfw.GLFW;
 
 public final class DependencyTreeWidget extends ScrollableWidget {
 	private static final int PADDING = 4;
-	private static final int ROW_HEIGHT = 30;
-	private static final int INDENT_WIDTH = 12;
-	private static final int GUIDE_COLOR = 0x6645C9A5;
+	private static final int ROW_HEIGHT = 42;
+	private static final int SECTION_BACKGROUND = 0xFF151A20;
 	private static final int ROW_BACKGROUND = 0xFF20262E;
 	private static final int ROW_BACKGROUND_ALTERNATE = 0xFF1D2229;
 	private static final int ROW_HOVER = 0xFF29323C;
@@ -52,26 +51,18 @@ public final class DependencyTreeWidget extends ScrollableWidget {
 		for (int index = firstIndex; index < lastIndex; index++) {
 			Row row = rows.get(index);
 			int rowY = getY() + PADDING + index * ROW_HEIGHT - (int) getScrollY();
-			boolean hovered = mouseX >= getX() + PADDING
+			boolean hovered = row.type() == RowType.DEPENDENCY
+				&& mouseX >= getX() + PADDING
 				&& mouseX < contentRight
 				&& mouseY >= rowY
-				&& mouseY < rowY + ROW_HEIGHT - 2;
+				&& mouseY < rowY + ROW_HEIGHT - 4;
 			if (hovered) {
 				hoveredIndex = index;
 			}
-			context.fill(
-				getX() + PADDING,
-				rowY,
-				contentRight,
-				rowY + ROW_HEIGHT - 2,
-				hovered
-					? ROW_HOVER
-					: index % 2 == 0 ? ROW_BACKGROUND : ROW_BACKGROUND_ALTERNATE
-			);
-			if (row.notice()) {
-				renderNotice(context, row, rowY, contentRight);
-			} else {
-				renderDependency(context, row, rowY, contentRight);
+			switch (row.type()) {
+				case SECTION -> renderSection(context, row, rowY, contentRight);
+				case DEPENDENCY -> renderDependency(context, row, rowY, contentRight, index, hovered);
+				case NOTICE -> renderNotice(context, row, rowY, contentRight);
 			}
 		}
 		context.disableScissor();
@@ -80,8 +71,7 @@ public final class DependencyTreeWidget extends ScrollableWidget {
 		}
 		if (hoveredIndex >= 0) {
 			Row hoveredRow = rows.get(hoveredIndex);
-			if (!hoveredRow.path().isEmpty()
-				&& textRenderer.getWidth(hoveredRow.path()) > availablePathWidth(hoveredRow, contentRight)) {
+			if (!hoveredRow.path().isEmpty()) {
 				context.drawTooltip(textRenderer, Text.literal(hoveredRow.path()), mouseX, mouseY);
 			}
 		}
@@ -123,7 +113,7 @@ public final class DependencyTreeWidget extends ScrollableWidget {
 
 	@Override
 	protected double getDeltaYPerScroll() {
-		return ROW_HEIGHT * 1.5;
+		return ROW_HEIGHT;
 	}
 
 	@Override
@@ -131,80 +121,130 @@ public final class DependencyTreeWidget extends ScrollableWidget {
 		appendDefaultNarrations(builder);
 	}
 
-	private void renderDependency(DrawContext context, Row row, int rowY, int contentRight) {
-		int depth = Math.min(row.depth(), 8);
-		int treeX = getX() + PADDING + 6;
-		for (int level = 0; level < depth; level++) {
-			int guideX = treeX + level * INDENT_WIDTH;
-			context.fill(guideX, rowY, guideX + 1, rowY + ROW_HEIGHT - 2, GUIDE_COLOR);
-		}
-		int branchX = treeX + depth * INDENT_WIDTH;
-		context.fill(branchX, rowY, branchX + 1, rowY + ROW_HEIGHT / 2, GUIDE_COLOR);
-		context.fill(branchX, rowY + ROW_HEIGHT / 2, branchX + 7, rowY + ROW_HEIGHT / 2 + 1, GUIDE_COLOR);
-
-		int textX = branchX + 10;
-		int badgeWidth = textRenderer.getWidth(row.kind()) + 8;
-		context.fill(textX, rowY + 3, textX + badgeWidth, rowY + 14, BADGE_BACKGROUND);
+	private void renderSection(DrawContext context, Row row, int rowY, int contentRight) {
+		context.fill(
+			getX() + PADDING,
+			rowY + 6,
+			contentRight,
+			rowY + ROW_HEIGHT - 6,
+			SECTION_BACKGROUND
+		);
+		context.fill(
+			getX() + PADDING,
+			rowY + 6,
+			getX() + PADDING + 3,
+			rowY + ROW_HEIGHT - 6,
+			CraftStudioTheme.ACCENT
+		);
 		context.drawTextWithShadow(
 			textRenderer,
-			row.kind(),
+			row.title(),
+			getX() + PADDING + 11,
+			rowY + 12,
+			CraftStudioTheme.TEXT_PRIMARY
+		);
+		String count = row.reason().getString();
+		context.drawTextWithShadow(
+			textRenderer,
+			Text.literal(count),
+			contentRight - textRenderer.getWidth(count) - 8,
+			rowY + 12,
+			CraftStudioTheme.TEXT_MUTED
+		);
+	}
+
+	private void renderDependency(
+		DrawContext context,
+		Row row,
+		int rowY,
+		int contentRight,
+		int index,
+		boolean hovered
+	) {
+		int left = getX() + PADDING;
+		context.fill(
+			left,
+			rowY,
+			contentRight,
+			rowY + ROW_HEIGHT - 4,
+			hovered
+				? ROW_HOVER
+				: index % 2 == 0 ? ROW_BACKGROUND : ROW_BACKGROUND_ALTERNATE
+		);
+
+		int textX = left + 8;
+		int badgeWidth = textRenderer.getWidth(row.badge()) + 8;
+		context.fill(textX, rowY + 4, textX + badgeWidth, rowY + 15, BADGE_BACKGROUND);
+		context.drawTextWithShadow(
+			textRenderer,
+			row.badge(),
 			textX + 4,
-			rowY + 4,
+			rowY + 5,
 			CraftStudioTheme.ACCENT
 		);
 
 		int sourceWidth = textRenderer.getWidth(row.source()) + 8;
-		int sourceX = contentRight - sourceWidth - 4;
-		context.fill(sourceX, rowY + 3, contentRight - 4, rowY + 14, BADGE_BACKGROUND);
+		int sourceX = contentRight - sourceWidth - 6;
+		context.fill(sourceX, rowY + 4, contentRight - 6, rowY + 15, BADGE_BACKGROUND);
 		context.drawTextWithShadow(
 			textRenderer,
 			row.source(),
 			sourceX + 4,
-			rowY + 4,
+			rowY + 5,
 			row.color()
 		);
 
-		int relationX = textX + badgeWidth + 6;
-		int relationWidth = Math.max(1, sourceX - relationX - 6);
-		String relation = middleTruncate(row.relationship().getString(), relationWidth);
+		int titleX = textX + badgeWidth + 7;
+		String title = middleTruncate(
+			row.title().getString(),
+			Math.max(1, sourceX - titleX - 7)
+		);
 		context.drawTextWithShadow(
 			textRenderer,
-			Text.literal(relation),
-			relationX,
-			rowY + 4,
+			Text.literal(title),
+			titleX,
+			rowY + 5,
 			CraftStudioTheme.TEXT_PRIMARY
 		);
 
-		String suffix = row.repeated() ? "  ↩ linked above" : "";
-		int pathWidth = Math.max(1, contentRight - textX - 6);
-		String path = middleTruncate(row.path() + suffix, pathWidth);
+		String path = middleTruncate(row.path(), contentRight - textX - 8);
 		context.drawTextWithShadow(
 			textRenderer,
 			Text.literal(path),
 			textX,
 			rowY + 17,
-			row.repeated() ? CraftStudioTheme.INFORMATION : CraftStudioTheme.TEXT_MUTED
+			CraftStudioTheme.TEXT_MUTED
+		);
+
+		String reason = "Needed for: " + row.reason().getString();
+		context.drawTextWithShadow(
+			textRenderer,
+			Text.literal(middleTruncate(reason, contentRight - textX - 8)),
+			textX,
+			rowY + 29,
+			CraftStudioTheme.INFORMATION
 		);
 	}
 
 	private void renderNotice(DrawContext context, Row row, int rowY, int contentRight) {
+		context.fill(
+			getX() + PADDING,
+			rowY + 2,
+			contentRight,
+			rowY + ROW_HEIGHT - 4,
+			ROW_BACKGROUND
+		);
 		String visible = middleTruncate(
-			row.relationship().getString(),
-			contentRight - getX() - PADDING * 3
+			row.title().getString(),
+			contentRight - getX() - PADDING * 4
 		);
 		context.drawTextWithShadow(
 			textRenderer,
 			Text.literal(visible),
 			getX() + PADDING * 2,
-			rowY + 10,
+			rowY + 15,
 			row.color()
 		);
-	}
-
-	private int availablePathWidth(Row row, int contentRight) {
-		int depth = Math.min(row.depth(), 8);
-		int textX = getX() + PADDING + 16 + depth * INDENT_WIDTH;
-		return Math.max(1, contentRight - textX - 6);
 	}
 
 	private String middleTruncate(String value, int availableWidth) {
@@ -224,40 +264,64 @@ public final class DependencyTreeWidget extends ScrollableWidget {
 		return start + ellipsis + new StringBuilder(reversedEnd).reverse();
 	}
 
+	private enum RowType {
+		SECTION,
+		DEPENDENCY,
+		NOTICE
+	}
+
 	public record Row(
-		int depth,
-		Text kind,
-		Text relationship,
+		RowType type,
+		Text title,
+		Text badge,
 		String path,
+		Text reason,
 		Text source,
-		int color,
-		boolean repeated,
-		boolean notice
+		int color
 	) {
 		public Row {
-			if (depth < 0) {
-				throw new IllegalArgumentException("depth cannot be negative.");
-			}
-			kind = Objects.requireNonNull(kind, "kind");
-			relationship = Objects.requireNonNull(relationship, "relationship");
+			type = Objects.requireNonNull(type, "type");
+			title = Objects.requireNonNull(title, "title");
+			badge = Objects.requireNonNull(badge, "badge");
 			path = Objects.requireNonNull(path, "path");
+			reason = Objects.requireNonNull(reason, "reason");
 			source = Objects.requireNonNull(source, "source");
 		}
 
+		public static Row section(Text title, int count) {
+			String countLabel = count == 1 ? "1 entry" : count + " entries";
+			return new Row(
+				RowType.SECTION,
+				title,
+				Text.empty(),
+				"",
+				Text.literal(countLabel),
+				Text.empty(),
+				CraftStudioTheme.TEXT_PRIMARY
+			);
+		}
+
 		public static Row dependency(
-			int depth,
-			Text kind,
-			Text relationship,
+			Text title,
+			Text badge,
 			String path,
+			Text reason,
 			Text source,
-			int color,
-			boolean repeated
+			int color
 		) {
-			return new Row(depth, kind, relationship, path, source, color, repeated, false);
+			return new Row(RowType.DEPENDENCY, title, badge, path, reason, source, color);
 		}
 
 		public static Row notice(Text message, int color) {
-			return new Row(0, Text.empty(), message, "", Text.empty(), color, false, true);
+			return new Row(
+				RowType.NOTICE,
+				message,
+				Text.empty(),
+				"",
+				Text.empty(),
+				Text.empty(),
+				color
+			);
 		}
 	}
 }
