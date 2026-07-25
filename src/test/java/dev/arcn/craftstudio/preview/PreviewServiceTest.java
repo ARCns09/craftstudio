@@ -54,6 +54,7 @@ public final class PreviewServiceTest {
 		assertEquals(1, scene.variants(PreviewMode.BLOCK).size(), "crafting table block variants");
 		assertEquals(1, scene.variants(PreviewMode.ITEM).size(), "crafting table item variants");
 		Variant block = scene.variants(PreviewMode.BLOCK).getFirst();
+		Variant item = scene.variants(PreviewMode.ITEM).getFirst();
 		assertEquals(6, block.faces().size(), "crafting table cube faces");
 		assertTexture(block, "up", "textures/block/crafting_table_top.png");
 		assertTexture(block, "down", "textures/block/oak_planks.png");
@@ -62,6 +63,17 @@ public final class PreviewServiceTest {
 		assertTexture(block, "east", "textures/block/crafting_table_side.png");
 		assertTexture(block, "south", "textures/block/crafting_table_side.png");
 		assertEquals(0L, block.missingFaceCount(), "crafting table missing faces");
+		assertEquals(
+			PreviewScene.DisplayTransform.IDENTITY,
+			block.displayTransform(),
+			"block preview display transform"
+		);
+		assertTrue(nearly(item.displayTransform().rotationX(), 30.0F), "item GUI x rotation");
+		assertTrue(nearly(item.displayTransform().rotationY(), 225.0F), "item GUI y rotation");
+		assertTrue(nearly(item.displayTransform().rotationZ(), 0.0F), "item GUI z rotation");
+		assertTrue(nearly(item.displayTransform().scaleX(), 0.625F), "item GUI x scale");
+		assertTrue(nearly(item.displayTransform().scaleY(), 0.625F), "item GUI y scale");
+		assertTrue(nearly(item.displayTransform().scaleZ(), 0.625F), "item GUI z scale");
 	}
 
 	private static void testFurnaceVariantsAndRotation(AssetSource source) {
@@ -70,6 +82,11 @@ public final class PreviewServiceTest {
 		Variant unlitNorth = variant(scene, "facing", "north", "lit", "false");
 		Variant litNorth = variant(scene, "facing", "north", "lit", "true");
 		Variant unlitEast = variant(scene, "facing", "east", "lit", "false");
+		assertEquals(
+			unlitNorth,
+			scene.variants(PreviewMode.BLOCK).get(scene.preferredVariantIndex(PreviewMode.BLOCK)),
+			"preferred furnace preview starts north and unlit"
+		);
 		assertTexture(unlitNorth, "north", "textures/block/furnace_front.png");
 		assertTexture(litNorth, "north", "textures/block/furnace_front_on.png");
 		Face northFront = face(unlitNorth, "north");

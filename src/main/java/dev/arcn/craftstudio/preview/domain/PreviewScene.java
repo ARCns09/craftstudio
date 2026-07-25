@@ -30,6 +30,27 @@ public record PreviewScene(
 		return variants.stream().anyMatch(variant -> variant.mode() == mode);
 	}
 
+	public int preferredVariantIndex(PreviewMode mode) {
+		List<Variant> modeVariants = variants(mode);
+		int preferredIndex = 0;
+		int preferredScore = Integer.MIN_VALUE;
+		for (int index = 0; index < modeVariants.size(); index++) {
+			Variant variant = modeVariants.get(index);
+			int score = 0;
+			if ("north".equals(variant.properties().get("facing"))) {
+				score += 100;
+			}
+			score += (int) variant.properties().values().stream()
+				.filter("false"::equals)
+				.count();
+			if (score > preferredScore) {
+				preferredIndex = index;
+				preferredScore = score;
+			}
+		}
+		return preferredIndex;
+	}
+
 	public boolean available() {
 		return !variants.isEmpty();
 	}
@@ -41,6 +62,7 @@ public record PreviewScene(
 		Map<String, String> properties,
 		List<Face> faces,
 		Map<String, Texture> textures,
+		DisplayTransform displayTransform,
 		List<String> diagnostics
 	) {
 		public Variant {
@@ -54,11 +76,50 @@ public record PreviewScene(
 			textures = Map.copyOf(new LinkedHashMap<>(
 				Objects.requireNonNull(textures, "textures")
 			));
+			displayTransform = Objects.requireNonNull(displayTransform, "displayTransform");
 			diagnostics = List.copyOf(Objects.requireNonNull(diagnostics, "diagnostics"));
 		}
 
 		public long missingFaceCount() {
 			return faces.stream().filter(Face::missingTexture).count();
+		}
+	}
+
+	public record DisplayTransform(
+		float rotationX,
+		float rotationY,
+		float rotationZ,
+		float translationX,
+		float translationY,
+		float translationZ,
+		float scaleX,
+		float scaleY,
+		float scaleZ
+	) {
+		public static final DisplayTransform IDENTITY = new DisplayTransform(
+			0.0F,
+			0.0F,
+			0.0F,
+			0.0F,
+			0.0F,
+			0.0F,
+			1.0F,
+			1.0F,
+			1.0F
+		);
+
+		public DisplayTransform {
+			if (!Float.isFinite(rotationX)
+				|| !Float.isFinite(rotationY)
+				|| !Float.isFinite(rotationZ)
+				|| !Float.isFinite(translationX)
+				|| !Float.isFinite(translationY)
+				|| !Float.isFinite(translationZ)
+				|| !Float.isFinite(scaleX)
+				|| !Float.isFinite(scaleY)
+				|| !Float.isFinite(scaleZ)) {
+				throw new IllegalArgumentException("Display transform values must be finite.");
+			}
 		}
 	}
 

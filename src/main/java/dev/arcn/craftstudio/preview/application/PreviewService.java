@@ -9,6 +9,7 @@ import dev.arcn.craftstudio.graph.domain.AssetResolutionResult;
 import dev.arcn.craftstudio.graph.domain.GraphNodeType;
 import dev.arcn.craftstudio.preview.domain.PreviewMode;
 import dev.arcn.craftstudio.preview.domain.PreviewScene;
+import dev.arcn.craftstudio.preview.domain.PreviewScene.DisplayTransform;
 import dev.arcn.craftstudio.preview.domain.PreviewScene.Face;
 import dev.arcn.craftstudio.preview.domain.PreviewScene.Texture;
 import dev.arcn.craftstudio.preview.domain.PreviewScene.Variant;
@@ -219,14 +220,32 @@ public final class PreviewService {
 		Optional<ResourceIdentifier> identifier = parseIdentifier(modelValue);
 		if (identifier.isEmpty()) {
 			diagnostics.add("Invalid model identifier: " + modelValue);
-			return new Variant(id, label, mode, properties, List.of(), Map.of(), diagnostics);
+			return new Variant(
+				id,
+				label,
+				mode,
+				properties,
+				List.of(),
+				Map.of(),
+				DisplayTransform.IDENTITY,
+				diagnostics
+			);
 		}
 		EffectiveModel model = loadModel(identifier.get(), new LinkedHashSet<>(), diagnostics);
 		if (model.elements().isEmpty()) {
 			diagnostics.add(
 				"Model has no supported standard JSON geometry: " + identifier.get()
 			);
-			return new Variant(id, label, mode, properties, List.of(), Map.of(), diagnostics);
+			return new Variant(
+				id,
+				label,
+				mode,
+				properties,
+				List.of(),
+				Map.of(),
+				DisplayTransform.IDENTITY,
+				diagnostics
+			);
 		}
 		float xRotation = floatValue(application, "x", 0.0F);
 		float yRotation = floatValue(application, "y", 0.0F);
@@ -250,6 +269,9 @@ public final class PreviewService {
 			properties,
 			faces,
 			textures,
+			mode == PreviewMode.ITEM
+				? model.guiTransform()
+				: DisplayTransform.IDENTITY,
 			diagnostics.stream().distinct().toList()
 		);
 	}
@@ -303,9 +325,17 @@ public final class PreviewService {
 		List<ElementDefinition> elements = json.has("elements")
 			? parseElements(json.get("elements"), path, diagnostics)
 			: parent.elements();
+		DisplayTransform guiTransform = parent.guiTransform();
+		if (json.has("display") && json.get("display").isJsonObject()) {
+			JsonObject display = json.getAsJsonObject("display");
+			if (display.has("gui") && display.get("gui").isJsonObject()) {
+				guiTransform = parseDisplayTransform(display.getAsJsonObject("gui"));
+			}
+		}
 		EffectiveModel result = new EffectiveModel(
 			Map.copyOf(textures),
-			List.copyOf(elements)
+			List.copyOf(elements),
+			guiTransform
 		);
 		chain.remove(identifier);
 		modelCache.put(identifier, result);
@@ -352,6 +382,23 @@ public final class PreviewService {
 			elements.add(new ElementDefinition(from, to, Map.copyOf(faces), rotation));
 		}
 		return elements;
+	}
+
+	private DisplayTransform parseDisplayTransform(JsonObject object) {
+		float[] rotation = vector(object.get("rotation"), new float[] {0, 0, 0});
+		float[] translation = vector(object.get("translation"), new float[] {0, 0, 0});
+		float[] scale = vector(object.get("scale"), new float[] {1, 1, 1});
+		return new DisplayTransform(
+			rotation[0],
+			rotation[1],
+			rotation[2],
+			clamp(translation[0], -80.0F, 80.0F),
+			clamp(translation[1], -80.0F, 80.0F),
+			clamp(translation[2], -80.0F, 80.0F),
+			clamp(scale[0], -4.0F, 4.0F),
+			clamp(scale[1], -4.0F, 4.0F),
+			clamp(scale[2], -4.0F, 4.0F)
+		);
 	}
 
 	private ElementRotation parseElementRotation(JsonElement element) {
@@ -717,6 +764,10 @@ public final class PreviewService {
 		return object.get(key).getAsFloat();
 	}
 
+	private float clamp(float value, float minimum, float maximum) {
+		return Math.max(minimum, Math.min(maximum, value));
+	}
+
 	private String axisName(int axis) {
 		return switch (axis) {
 			case 0 -> "x";
@@ -766,9 +817,14 @@ public final class PreviewService {
 
 	private record EffectiveModel(
 		Map<String, String> textures,
-		List<ElementDefinition> elements
+		List<ElementDefinition> elements,
+		DisplayTransform guiTransform
 	) {
-		private static final EffectiveModel EMPTY = new EffectiveModel(Map.of(), List.of());
+		private static final EffectiveModel EMPTY = new EffectiveModel(
+			Map.of(),
+			List.of(),
+			DisplayTransform.IDENTITY
+		);
 	}
 
 	private record ElementDefinition(

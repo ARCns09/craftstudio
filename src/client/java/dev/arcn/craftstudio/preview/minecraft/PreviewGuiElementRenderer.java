@@ -1,6 +1,7 @@
 package dev.arcn.craftstudio.preview.minecraft;
 
 import dev.arcn.craftstudio.preview.domain.PreviewScene.Face;
+import dev.arcn.craftstudio.preview.domain.PreviewScene.DisplayTransform;
 import dev.arcn.craftstudio.preview.domain.PreviewScene.Vertex;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.render.SpecialGuiElementRenderer;
@@ -15,6 +16,7 @@ import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.RotationAxis;
+import org.joml.Quaternionf;
 
 public final class PreviewGuiElementRenderer
 	extends SpecialGuiElementRenderer<PreviewGuiElementRenderState> {
@@ -39,9 +41,10 @@ public final class PreviewGuiElementRenderer
 			state.panY() / state.scale(),
 			0.0F
 		);
-		matrices.scale(1.0F, -1.0F, 1.0F);
+		matrices.scale(1.0F, -1.0F, -1.0F);
 		matrices.multiply(RotationAxis.POSITIVE_X.rotationDegrees(state.pitch()));
 		matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(state.yaw()));
+		applyDisplayTransform(matrices, state.variant().displayTransform());
 		matrices.translate(-state.centerX(), -state.centerY(), -state.centerZ());
 
 		for (Face face : state.variant().faces()) {
@@ -72,6 +75,20 @@ public final class PreviewGuiElementRenderer
 	@Override
 	protected String getName() {
 		return "CraftStudio preview";
+	}
+
+	private void applyDisplayTransform(MatrixStack matrices, DisplayTransform transform) {
+		matrices.translate(
+			transform.translationX(),
+			transform.translationY(),
+			transform.translationZ()
+		);
+		matrices.multiply(new Quaternionf().rotationXYZ(
+			(float) Math.toRadians(transform.rotationX()),
+			(float) Math.toRadians(transform.rotationY()),
+			(float) Math.toRadians(transform.rotationZ())
+		));
+		matrices.scale(transform.scaleX(), transform.scaleY(), transform.scaleZ());
 	}
 
 	private float[] faceNormal(Face face) {

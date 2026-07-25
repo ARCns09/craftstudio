@@ -1,6 +1,10 @@
 package dev.arcn.craftstudio.preview.ui;
 
+import dev.arcn.craftstudio.preview.domain.PreviewMode;
+import dev.arcn.craftstudio.preview.domain.PreviewScene.DisplayTransform;
+import dev.arcn.craftstudio.preview.domain.PreviewScene.Face;
 import dev.arcn.craftstudio.preview.domain.PreviewScene.Variant;
+import dev.arcn.craftstudio.preview.domain.PreviewScene.Vertex;
 import dev.arcn.craftstudio.preview.minecraft.PreviewGuiElementRenderState;
 import dev.arcn.craftstudio.preview.minecraft.PreviewTextureLibrary;
 import dev.arcn.craftstudio.ui.theme.CraftStudioTheme;
@@ -25,9 +29,9 @@ public final class PreviewViewportWidget extends ClickableWidget {
 	private final MinecraftClient client;
 	private final PreviewTextureLibrary textureLibrary;
 	private Variant variant;
-	private float yaw = -35.0F;
-	private float pitch = 25.0F;
-	private float zoom = 1.0F;
+	private float yaw;
+	private float pitch;
+	private float zoom;
 	private float panX;
 	private float panY;
 
@@ -44,14 +48,23 @@ public final class PreviewViewportWidget extends ClickableWidget {
 		this.client = Objects.requireNonNull(client, "client");
 		this.textureLibrary = Objects.requireNonNull(textureLibrary, "textureLibrary");
 		this.variant = Objects.requireNonNull(variant, "variant");
+		resetCamera();
 	}
 
 	public void resetCamera() {
-		yaw = -35.0F;
-		pitch = 25.0F;
+		yaw = variant.mode() == PreviewMode.ITEM
+			? 0.0F
+			: 225.0F;
+		pitch = variant.mode() == PreviewMode.ITEM
+			? 0.0F
+			: 30.0F;
 		zoom = 1.0F;
 		panX = 0.0F;
 		panY = 0.0F;
+	}
+
+	public void setVariant(Variant variant) {
+		this.variant = Objects.requireNonNull(variant, "variant");
 	}
 
 	@Override
@@ -99,7 +112,7 @@ public final class PreviewViewportWidget extends ClickableWidget {
 		float scale = Math.max(
 			1.0F,
 			Math.min(getWidth(), getHeight()) / (frame.diagonal() * CAMERA_PADDING)
-		) * zoom;
+		) * inventoryFitMultiplier() * zoom;
 		context.state.addSpecialElement(new PreviewGuiElementRenderState(
 			variant,
 			textures,
@@ -141,7 +154,7 @@ public final class PreviewViewportWidget extends ClickableWidget {
 	@Override
 	protected void onDrag(Click click, double deltaX, double deltaY) {
 		if (click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
-			yaw += (float) deltaX * 0.8F;
+			yaw -= (float) deltaX * 0.8F;
 			pitch = MathHelper.clamp(pitch + (float) deltaY * 0.8F, -89.0F, 89.0F);
 		} else if (click.button() == GLFW.GLFW_MOUSE_BUTTON_MIDDLE) {
 			panX += (float) deltaX;
@@ -187,6 +200,18 @@ public final class PreviewViewportWidget extends ClickableWidget {
 		appendDefaultNarrations(builder);
 	}
 
+	private float inventoryFitMultiplier() {
+		if (variant.mode() != PreviewMode.ITEM) {
+			return 1.0F;
+		}
+		DisplayTransform transform = variant.displayTransform();
+		float largestScale = Math.max(
+			Math.abs(transform.scaleX()),
+			Math.max(Math.abs(transform.scaleY()), Math.abs(transform.scaleZ()))
+		);
+		return largestScale > 0.001F ? 1.0F / largestScale : 1.0F;
+	}
+
 	private record CameraFrame(float centerX, float centerY, float centerZ, float diagonal) {
 		private static CameraFrame forVariant(Variant variant) {
 			float minX = Float.POSITIVE_INFINITY;
@@ -196,8 +221,8 @@ public final class PreviewViewportWidget extends ClickableWidget {
 			float maxY = Float.NEGATIVE_INFINITY;
 			float maxZ = Float.NEGATIVE_INFINITY;
 
-			for (dev.arcn.craftstudio.preview.domain.PreviewScene.Face face : variant.faces()) {
-				for (dev.arcn.craftstudio.preview.domain.PreviewScene.Vertex vertex : face.vertices()) {
+			for (Face face : variant.faces()) {
+				for (Vertex vertex : face.vertices()) {
 					minX = Math.min(minX, vertex.x());
 					minY = Math.min(minY, vertex.y());
 					minZ = Math.min(minZ, vertex.z());

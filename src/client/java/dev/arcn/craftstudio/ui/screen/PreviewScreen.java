@@ -31,6 +31,7 @@ public final class PreviewScreen extends Screen {
 	private Text refreshError;
 	private PreviewTextureLibrary textureLibrary;
 	private PreviewViewportWidget viewport;
+	private final Map<String, ButtonWidget> propertyButtons = new LinkedHashMap<>();
 
 	public PreviewScreen(
 		CraftStudioClientContext context,
@@ -44,10 +45,12 @@ public final class PreviewScreen extends Screen {
 		this.catalogResolution = catalogResolution;
 		this.scene = scene;
 		this.mode = scene.supports(PreviewMode.BLOCK) ? PreviewMode.BLOCK : PreviewMode.ITEM;
+		this.variantIndex = scene.preferredVariantIndex(mode);
 	}
 
 	@Override
 	protected void init() {
+		propertyButtons.clear();
 		if (textureLibrary == null) {
 			textureLibrary = new PreviewTextureLibrary(client);
 		}
@@ -127,6 +130,7 @@ public final class PreviewScreen extends Screen {
 				).build();
 				propertyButton.active = !refreshing && propertyValues(property).size() > 1;
 				addDrawableChild(propertyButton);
+				propertyButtons.put(property, propertyButton);
 			}
 		}
 
@@ -239,7 +243,7 @@ public final class PreviewScreen extends Screen {
 
 	private void switchMode() {
 		mode = mode == PreviewMode.BLOCK ? PreviewMode.ITEM : PreviewMode.BLOCK;
-		variantIndex = 0;
+		variantIndex = scene.preferredVariantIndex(mode);
 		clearAndInit();
 	}
 
@@ -248,7 +252,7 @@ public final class PreviewScreen extends Screen {
 			return;
 		}
 		variantIndex = Math.floorMod(variantIndex + amount, variants().size());
-		clearAndInit();
+		updateVariant();
 	}
 
 	private List<String> propertyNames() {
@@ -292,9 +296,18 @@ public final class PreviewScreen extends Screen {
 				.allMatch(entry -> entry.getValue().equals(candidate.properties().get(entry.getKey())));
 			if (matches) {
 				variantIndex = index;
-				clearAndInit();
+				updateVariant();
 				return;
 			}
+		}
+	}
+
+	private void updateVariant() {
+		if (viewport != null) {
+			viewport.setVariant(currentVariant());
+		}
+		for (Map.Entry<String, ButtonWidget> entry : propertyButtons.entrySet()) {
+			entry.getValue().setMessage(propertyLabel(entry.getKey()));
 		}
 	}
 
