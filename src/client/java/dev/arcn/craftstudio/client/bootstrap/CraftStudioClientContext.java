@@ -10,11 +10,16 @@ import dev.arcn.craftstudio.graph.domain.AssetKey;
 import dev.arcn.craftstudio.graph.domain.AssetResolutionResult;
 import dev.arcn.craftstudio.graph.resolver.BlockDependencyResolver;
 import dev.arcn.craftstudio.graph.resolver.ItemDependencyResolver;
+import dev.arcn.craftstudio.export.application.ExportService;
+import dev.arcn.craftstudio.export.domain.ExportException;
+import dev.arcn.craftstudio.export.domain.ExportRequest;
+import dev.arcn.craftstudio.export.domain.ExportResult;
 import dev.arcn.craftstudio.platform.filesystem.AtomicFileWriter;
 import dev.arcn.craftstudio.platform.paths.WorkspacePaths;
 import dev.arcn.craftstudio.platform.process.EditorSettings;
 import dev.arcn.craftstudio.platform.process.EditorSettingsRepository;
 import dev.arcn.craftstudio.platform.process.ExternalEditorService;
+import dev.arcn.craftstudio.platform.task.OperationCancellation;
 import dev.arcn.craftstudio.preview.application.PreviewService;
 import dev.arcn.craftstudio.preview.domain.PreviewScene;
 import dev.arcn.craftstudio.preview.domain.PreviewScene.Texture;
@@ -43,6 +48,8 @@ import dev.arcn.craftstudio.reload.ProjectFileChangeBatch;
 import dev.arcn.craftstudio.reload.ProjectFileWatcher;
 import dev.arcn.craftstudio.reload.ReloadClassification;
 import dev.arcn.craftstudio.version.TargetVersionManifest;
+import dev.arcn.craftstudio.validation.application.ValidationService;
+import dev.arcn.craftstudio.validation.domain.ValidationReport;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
@@ -80,6 +87,9 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private final ItemDependencyResolver itemDependencyResolver;
 	private final EditorSettingsRepository editorSettingsRepository;
 	private final ExternalEditorService externalEditorService;
+	private final ValidationService validationService;
+	private final ExportService exportService;
+	private final Path currentInstanceResourcePacksRoot;
 	private final String targetVersion;
 	private final ExecutorService backgroundExecutor;
 	private final ConcurrentHashMap<String, CompletableFuture<AssetResolutionResult>> blockResolutionCache =
@@ -121,6 +131,9 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		ItemDependencyResolver itemDependencyResolver,
 		EditorSettingsRepository editorSettingsRepository,
 		ExternalEditorService externalEditorService,
+		ValidationService validationService,
+		ExportService exportService,
+		Path currentInstanceResourcePacksRoot,
 		String targetVersion
 	) {
 		this.workspacePaths = workspacePaths;
@@ -133,6 +146,11 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		this.itemDependencyResolver = itemDependencyResolver;
 		this.editorSettingsRepository = editorSettingsRepository;
 		this.externalEditorService = externalEditorService;
+		this.validationService = validationService;
+		this.exportService = exportService;
+		this.currentInstanceResourcePacksRoot = currentInstanceResourcePacksRoot
+			.toAbsolutePath()
+			.normalize();
 		this.targetVersion = targetVersion;
 		this.backgroundExecutor = Executors.newFixedThreadPool(2, Thread.ofPlatform()
 			.name("craftstudio-worker-", 0)
@@ -169,6 +187,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 			MinecraftClient.getInstance().getDefaultResourcePack(),
 			target.minecraftVersion()
 		);
+		ValidationService validationService = new ValidationService(target, vanillaAssets, clock);
 		return new CraftStudioClientContext(
 			paths,
 			projectService,
@@ -183,6 +202,9 @@ public final class CraftStudioClientContext implements AutoCloseable {
 				atomicFileWriter
 			),
 			new ExternalEditorService(),
+			validationService,
+			new ExportService(target, validationService, atomicFileWriter, clock),
+			FabricLoader.getInstance().getGameDir().resolve("resourcepacks"),
 			target.minecraftVersion()
 		);
 	}
@@ -280,6 +302,57 @@ public final class CraftStudioClientContext implements AutoCloseable {
 
 	public Optional<ProjectAssetSource> activeProjectSource() {
 		return Optional.ofNullable(activeProjectSource);
+	}
+
+	public Path defaultExportRoot() {
+		return requireActiveProject().root().resolve(".craftstudio/exports").normalize();
+	}
+
+	public Path currentInstanceResourcePacksRoot() {
+		return currentInstanceResourcePacksRoot;
+	}
+
+	public BackgroundTask<ValidationReport> validateActiveProject() {
+		CraftStudioProject project = requireActiveProject();
+		OperationCancellation cancellation = new OperationCancellation();
+		CompletableFuture<ValidationReport> future = CompletableFuture.supplyAsync(() -> {
+			ValidationReport report = validationService.validateProject(project, cancellation);
+			CraftStudio.LOGGER.info(
+				"Project validated project_id={} file_count={} errors={} warnings={} operation=project_validate",
+				project.metadata().projectId(),
+				report.fileCount(),
+				report.count(dev.arcn.craftstudio.validation.domain.ValidationSeverity.ERROR),
+				report.count(dev.arcn.craftstudio.validation.domain.ValidationSeverity.WARNING)
+			);
+			return report;
+		}, backgroundExecutor);
+		return new BackgroundTask<>(future, cancellation);
+	}
+
+	public Path plannedExportPath(ExportRequest request) {
+		return exportService.targetPath(request);
+	}
+
+	public BackgroundTask<ExportResult> exportActiveProject(ExportRequest request) {
+		CraftStudioProject project = requireActiveProject();
+		OperationCancellation cancellation = new OperationCancellation();
+		CompletableFuture<ExportResult> future = CompletableFuture.supplyAsync(() -> {
+			try {
+				ExportResult result = exportService.export(project, request, cancellation);
+				CraftStudio.LOGGER.info(
+					"Project exported project_id={} output={} file_count={} report={} backup={} operation=project_export",
+					project.metadata().projectId(),
+					result.output(),
+					result.fileCount(),
+					result.report(),
+					result.backup().map(Path::toString).orElse("")
+				);
+				return result;
+			} catch (ExportException exception) {
+				throw new CompletionException(exception);
+			}
+		}, backgroundExecutor);
+		return new BackgroundTask<>(future, cancellation);
 	}
 
 	public CompletableFuture<AssetResolutionResult> resolveBlock(CatalogAsset asset) {
@@ -954,6 +1027,20 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	public record SettingsSnapshot(EditorSettings editorSettings, boolean autoReload) {
 		public SettingsSnapshot {
 			editorSettings = Objects.requireNonNull(editorSettings, "editorSettings");
+		}
+	}
+
+	public record BackgroundTask<T>(
+		CompletableFuture<T> future,
+		OperationCancellation cancellation
+	) {
+		public BackgroundTask {
+			future = Objects.requireNonNull(future, "future");
+			cancellation = Objects.requireNonNull(cancellation, "cancellation");
+		}
+
+		public void cancel() {
+			cancellation.cancel();
 		}
 	}
 

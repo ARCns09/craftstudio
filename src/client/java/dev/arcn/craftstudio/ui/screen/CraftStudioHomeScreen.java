@@ -71,11 +71,22 @@ public final class CraftStudioHomeScreen extends Screen {
 		).dimensions(
 			contentX,
 			buttonY + BUTTON_HEIGHT + CraftStudioTheme.SPACE_2,
-			contentWidth,
+			halfButtonWidth,
 			BUTTON_HEIGHT
 		).build();
 		browseAssetsButton.active = !busy;
 		addDrawableChild(browseAssetsButton);
+		ButtonWidget validationButton = ButtonWidget.builder(
+			Text.translatable("screen.craftstudio.home.validation_export"),
+			button -> client.setScreen(new ValidationCenterScreen(context, this))
+		).dimensions(
+			contentX + halfButtonWidth + CraftStudioTheme.SPACE_2,
+			buttonY + BUTTON_HEIGHT + CraftStudioTheme.SPACE_2,
+			halfButtonWidth,
+			BUTTON_HEIGHT
+		).build();
+		validationButton.active = !busy && context.activeProject() != null;
+		addDrawableChild(validationButton);
 
 		ButtonWidget settingsButton = ButtonWidget.builder(
 			Text.translatable("screen.craftstudio.home.settings"),

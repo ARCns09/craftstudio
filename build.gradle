@@ -112,6 +112,14 @@ tasks.register("liveReloadTest", JavaExec) {
 	mainClass = "dev.arcn.craftstudio.reload.LiveReloadTest"
 }
 
+tasks.register("validationExportTest", JavaExec) {
+	group = "verification"
+	description = "Runs validation, folder/ZIP export, installation, report, and overwrite safety tests."
+	dependsOn testClasses
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = "dev.arcn.craftstudio.export.ValidationExportTest"
+}
+
 tasks.named("test") {
 	failOnNoDiscoveredTests = false
 }
@@ -123,7 +131,8 @@ check.dependsOn projectFoundationTest,
 	itemResolverTest,
 	bundleServiceTest,
 	previewServiceTest,
-	liveReloadTest
+	liveReloadTest,
+	validationExportTest
 
 java {
 	// Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task
