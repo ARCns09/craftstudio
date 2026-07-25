@@ -7,7 +7,12 @@
 	"authors": [
 		"ARCn09"
 	],
-	"license": "CC0-1.0",
+	"contact": {
+		"homepage": "https://github.com/ARCns09/craftstudio",
+		"sources": "https://github.com/ARCns09/craftstudio",
+		"issues": "https://github.com/ARCns09/craftstudio/issues"
+	},
+	"license": "LicenseRef-CraftStudio-Source-Available-1.0",
 	"icon": "assets/craftstudio/icon.png",
 	"environment": "client",
 	"entrypoints": {

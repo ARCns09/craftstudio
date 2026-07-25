@@ -1,121 +1,88 @@
-Creative Commons Legal Code
+CraftStudio Source-Available License 1.0
+Copyright (c) 2026 ARCn09. All Rights Reserved.
 
-CC0 1.0 Universal
+This license makes the CraftStudio source code available for learning,
+inspection, private modification, and private use. It is not an open-source
+license as defined by the Open Source Initiative because public redistribution
+is not permitted.
 
-    CREATIVE COMMONS CORPORATION IS NOT A LAW FIRM AND DOES NOT PROVIDE
-    LEGAL SERVICES. DISTRIBUTION OF THIS DOCUMENT DOES NOT CREATE AN
-    ATTORNEY-CLIENT RELATIONSHIP. CREATIVE COMMONS PROVIDES THIS
-    INFORMATION ON AN "AS-IS" BASIS. CREATIVE COMMONS MAKES NO WARRANTIES
-    REGARDING THE USE OF THIS DOCUMENT OR THE INFORMATION OR WORKS
-    PROVIDED HEREUNDER, AND DISCLAIMS LIABILITY FOR DAMAGES RESULTING FROM
-    THE USE OF THIS DOCUMENT OR THE INFORMATION OR WORKS PROVIDED
-    HEREUNDER.
+1. Permission
 
-Statement of Purpose
+Subject to this license, ARCn09 gives you a limited, non-exclusive,
+non-transferable, revocable license to:
 
-The laws of most jurisdictions throughout the world automatically confer
-exclusive Copyright and Related Rights (defined below) upon the creator
-and subsequent owner(s) (each and all, an "owner") of an original work of
-authorship and/or a database (each, a "Work").
+- view and study the CraftStudio source code;
+- download or clone the source code for your own use;
+- modify the source code and create derivative versions privately;
+- compile and run original or modified versions privately; and
+- use an official or privately modified copy for personal, non-commercial
+  purposes.
 
-Certain owners wish to permanently relinquish those rights to a Work for
-the purpose of contributing to a commons of creative, cultural and
-scientific works ("Commons") that the public can reliably and without fear
-of later claims of infringement build upon, modify, incorporate in other
-works, reuse and redistribute as freely as possible in any form whatsoever
-and for any purposes, including without limitation commercial purposes.
-These owners may contribute to the Commons to promote the ideal of a free
-culture and the further production of creative, cultural and scientific
-works, or to gain reputation or greater distribution for their Work in
-part through the use and efforts of others.
+2. No redistribution or publication
 
-For these and/or other purposes and motivations, and without any
-expectation of additional consideration or compensation, the person
-associating CC0 with a Work (the "Affirmer"), to the extent that he or she
-is an owner of Copyright and Related Rights in the Work, voluntarily
-elects to apply CC0 to the Work and publicly distribute the Work under its
-terms, with knowledge of his or her Copyright and Related Rights in the
-Work and the meaning and intended legal effect of CC0 on those rights.
+Unless ARCn09 gives you prior written permission, you may not make CraftStudio
+or a derivative version available to another person. This includes, without
+limitation:
 
-1. Copyright and Related Rights. A Work made available under CC0 may be
-protected by copyright and related or neighboring rights ("Copyright and
-Related Rights"). Copyright and Related Rights include, but are not
-limited to, the following:
+- publishing, uploading, reuploading, redistributing, repackaging, or mirroring
+  the source code or compiled files;
+- publishing a fork as a separate project, mod, product, or release;
+- distributing original or modified JAR files;
+- including CraftStudio in a public or private redistributed modpack, launcher,
+  installer, bundle, collection, or archive;
+- sublicensing, renting, selling, or commercially exploiting CraftStudio;
+- using the CraftStudio name, branding, or artwork for another project; or
+- claiming CraftStudio or any derivative version as your own work.
 
-  i. the right to reproduce, adapt, distribute, perform, display,
-     communicate, and translate a Work;
- ii. moral rights retained by the original author(s) and/or performer(s);
-iii. publicity and privacy rights pertaining to a person's image or
-     likeness depicted in a Work;
- iv. rights protecting against unfair competition in regards to a Work,
-     subject to the limitations in paragraph 4(a), below;
-  v. rights protecting the extraction, dissemination, use and reuse of data
-     in a Work;
- vi. database rights (such as those arising under Directive 96/9/EC of the
-     European Parliament and of the Council of 11 March 1996 on the legal
-     protection of databases, and under any national implementation
-     thereof, including any amended or successor version of such
-     directive); and
-vii. other similar, equivalent or corresponding rights throughout the
-     world based on applicable law or treaty, and any national
-     implementations thereof.
+The only authorized public releases are those published by ARCn09 through an
+official CraftStudio page or repository.
 
-2. Waiver. To the greatest extent permitted by, but not in contravention
-of, applicable law, Affirmer hereby overtly, fully, permanently,
-irrevocably and unconditionally waives, abandons, and surrenders all of
-Affirmer's Copyright and Related Rights and associated claims and causes
-of action, whether now known or unknown (including existing as well as
-future claims and causes of action), in the Work (i) in all territories
-worldwide, (ii) for the maximum duration provided by applicable law or
-treaty (including future time extensions), (iii) in any current or future
-medium and for any number of copies, and (iv) for any purpose whatsoever,
-including without limitation commercial, advertising or promotional
-purposes (the "Waiver"). Affirmer makes the Waiver for the benefit of each
-member of the public at large and to the detriment of Affirmer's heirs and
-successors, fully intending that such Waiver shall not be subject to
-revocation, rescission, cancellation, termination, or any other legal or
-equitable action to disrupt the quiet enjoyment of the Work by the public
-as contemplated by Affirmer's express Statement of Purpose.
+3. GitHub and contributions
 
-3. Public License Fallback. Should any part of the Waiver for any reason
-be judged legally invalid or ineffective under applicable law, then the
-Waiver shall be preserved to the maximum extent permitted taking into
-account Affirmer's express Statement of Purpose. In addition, to the
-extent the Waiver is so judged Affirmer hereby grants to each affected
-person a royalty-free, non transferable, non sublicensable, non exclusive,
-irrevocable and unconditional license to exercise Affirmer's Copyright and
-Related Rights in the Work (i) in all territories worldwide, (ii) for the
-maximum duration provided by applicable law or treaty (including future
-time extensions), (iii) in any current or future medium and for any number
-of copies, and (iv) for any purpose whatsoever, including without
-limitation commercial, advertising or promotional purposes (the
-"License"). The License shall be deemed effective as of the date CC0 was
-applied by Affirmer to the Work. Should any part of the License for any
-reason be judged legally invalid or ineffective under applicable law, such
-partial invalidity or ineffectiveness shall not invalidate the remainder
-of the License, and in such case Affirmer hereby affirms that he or she
-will not (i) exercise any of his or her remaining Copyright and Related
-Rights in the Work or (ii) assert any associated claims and causes of
-action with respect to the Work, in either case contrary to Affirmer's
-express Statement of Purpose.
+When CraftStudio is hosted in a public GitHub repository, GitHub users may view
+and fork the repository only to the extent required by GitHub's Terms of
+Service. A GitHub fork does not grant permission to publish releases,
+redistribute CraftStudio, operate the fork as a separate project, or distribute
+compiled files.
 
-4. Limitations and Disclaimers.
+You may submit a patch or pull request directly to the official CraftStudio
+repository. By intentionally submitting a contribution, you confirm that you
+have the right to submit it and grant ARCn09 a perpetual, worldwide,
+irrevocable, royalty-free license to use, reproduce, modify, distribute,
+publish, sublicense, and relicense that contribution as part of CraftStudio.
 
- a. No trademark or patent rights held by Affirmer are waived, abandoned,
-    surrendered, licensed or otherwise affected by this document.
- b. Affirmer offers the Work as-is and makes no representations or
-    warranties of any kind concerning the Work, express, implied,
-    statutory or otherwise, including without limitation warranties of
-    title, merchantability, fitness for a particular purpose, non
-    infringement, or the absence of latent or other defects, accuracy, or
-    the present or absence of errors, whether or not discoverable, all to
-    the greatest extent permissible under applicable law.
- c. Affirmer disclaims responsibility for clearing rights of other persons
-    that may apply to the Work or any use thereof, including without
-    limitation any person's Copyright and Related Rights in the Work.
-    Further, Affirmer disclaims responsibility for obtaining any necessary
-    consents, permissions or other rights required for any use of the
-    Work.
- d. Affirmer understands and acknowledges that Creative Commons is not a
-    party to this document and has no duty or obligation with respect to
-    this CC0 or use of the Work.
+4. Ownership
+
+CraftStudio, its source code, compiled files, artwork, documentation, name,
+branding, and all associated intellectual-property rights remain the property
+of ARCn09 and their respective third-party owners. No ownership is transferred
+by this license.
+
+5. Third-party components
+
+Minecraft, Fabric Loader, Fabric API, and all other third-party components are
+governed by their respective owners' terms and licenses. This license applies
+only to original CraftStudio material owned by ARCn09.
+
+6. Legal exceptions
+
+Nothing in this license limits a right that applicable law expressly gives you
+and that cannot legally be restricted or waived.
+
+7. No warranty
+
+CRAFTSTUDIO IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
+PURPOSE, AND NON-INFRINGEMENT. TO THE MAXIMUM EXTENT PERMITTED BY LAW, ARCn09
+WILL NOT BE LIABLE FOR ANY CLAIM, DAMAGES, DATA LOSS, OR OTHER LIABILITY ARISING
+FROM THE USE OF OR INABILITY TO USE CRAFTSTUDIO.
+
+8. Termination
+
+Your permission under this license ends automatically if you violate its terms.
+Upon termination, you must stop using CraftStudio and delete all unauthorized
+copies in your possession or control.
+
+For redistribution, publication, commercial-use, or other permissions, contact
+ARCn09 through:
+https://github.com/ARCns09/craftstudio
