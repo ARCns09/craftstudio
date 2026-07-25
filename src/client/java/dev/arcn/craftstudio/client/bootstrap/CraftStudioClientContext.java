@@ -12,10 +12,18 @@ import dev.arcn.craftstudio.graph.resolver.BlockDependencyResolver;
 import dev.arcn.craftstudio.graph.resolver.ItemDependencyResolver;
 import dev.arcn.craftstudio.platform.filesystem.AtomicFileWriter;
 import dev.arcn.craftstudio.platform.paths.WorkspacePaths;
+import dev.arcn.craftstudio.project.application.BundleService;
 import dev.arcn.craftstudio.project.application.ProjectService;
+import dev.arcn.craftstudio.project.domain.BundleOperationResult;
+import dev.arcn.craftstudio.project.domain.BundleFileComparison;
+import dev.arcn.craftstudio.project.domain.CopyPlan;
 import dev.arcn.craftstudio.project.domain.CraftStudioProject;
 import dev.arcn.craftstudio.project.domain.ProjectCreationRequest;
+import dev.arcn.craftstudio.project.domain.ProjectMetadata;
+import dev.arcn.craftstudio.project.domain.ProjectOperationException;
 import dev.arcn.craftstudio.project.domain.RecentProjectEntry;
+import dev.arcn.craftstudio.project.domain.RemovalPlan;
+import dev.arcn.craftstudio.project.domain.SelectionMode;
 import dev.arcn.craftstudio.project.infrastructure.PackMetadataWriter;
 import dev.arcn.craftstudio.project.infrastructure.ProjectMetadataRepository;
 import dev.arcn.craftstudio.project.infrastructure.RecentProjectRegistry;
@@ -28,10 +36,13 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
@@ -45,6 +56,7 @@ import net.minecraft.util.Identifier;
 public final class CraftStudioClientContext implements AutoCloseable {
 	private final WorkspacePaths workspacePaths;
 	private final ProjectService projectService;
+	private final BundleService bundleService;
 	private final RecentProjectRegistry recentProjectRegistry;
 	private final MinecraftVanillaCatalogAdapter catalogAdapter;
 	private final VanillaAssetSource vanillaAssetSource;
@@ -69,6 +81,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private CraftStudioClientContext(
 		WorkspacePaths workspacePaths,
 		ProjectService projectService,
+		BundleService bundleService,
 		RecentProjectRegistry recentProjectRegistry,
 		MinecraftVanillaCatalogAdapter catalogAdapter,
 		VanillaAssetSource vanillaAssetSource,
@@ -77,6 +90,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	) {
 		this.workspacePaths = workspacePaths;
 		this.projectService = projectService;
+		this.bundleService = bundleService;
 		this.recentProjectRegistry = recentProjectRegistry;
 		this.catalogAdapter = catalogAdapter;
 		this.vanillaAssetSource = vanillaAssetSource;
@@ -101,12 +115,13 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		AtomicFileWriter atomicFileWriter = new AtomicFileWriter();
 		ProjectMetadataRepository metadataRepository = new ProjectMetadataRepository(atomicFileWriter);
 		TargetVersionManifest target = TargetVersionManifest.minecraft_1_21_11();
+		Clock clock = Clock.systemUTC();
 		ProjectService projectService = new ProjectService(
 			target,
 			metadataRepository,
 			new PackMetadataWriter(atomicFileWriter),
 			atomicFileWriter,
-			Clock.systemUTC()
+			clock
 		);
 		RecentProjectRegistry recentProjects = new RecentProjectRegistry(
 			paths.recentProjectsFile(),
@@ -119,6 +134,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		return new CraftStudioClientContext(
 			paths,
 			projectService,
+			new BundleService(vanillaAssets, metadataRepository, atomicFileWriter, clock),
 			recentProjects,
 			new MinecraftVanillaCatalogAdapter(),
 			vanillaAssets,
@@ -293,6 +309,140 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		});
 	}
 
+	public CompletableFuture<CopyPlan> createCopyPlan(
+		AssetResolutionResult resolution,
+		SelectionMode mode,
+		Set<String> customPackPaths
+	) {
+		CraftStudioProject project = requireActiveProject();
+		return CompletableFuture.supplyAsync(() -> {
+			try {
+				return bundleService.createCopyPlan(project, resolution, mode, customPackPaths);
+			} catch (ProjectOperationException exception) {
+				throw new CompletionException(exception);
+			}
+		}, backgroundExecutor);
+	}
+
+	public CompletableFuture<BundleOperationResult> addToProject(
+		CopyPlan plan,
+		Set<String> replacePackPaths
+	) {
+		CraftStudioProject project = requireActiveProject();
+		return CompletableFuture.supplyAsync(() -> {
+			try {
+				BundleOperationResult result = bundleService.addToProject(
+					project,
+					plan,
+					replacePackPaths
+				);
+				refreshActiveProject(result.project());
+				CraftStudio.LOGGER.info(
+					"Bundle added asset_id={} mode={} copied={} kept={} conflict_replacements={} operation=bundle_add",
+					plan.root().identifier(),
+					plan.mode().metadataValue(),
+					result.copiedFiles(),
+					result.keptFiles(),
+					replacePackPaths.size()
+				);
+				return result;
+			} catch (ProjectOperationException exception) {
+				throw new CompletionException(exception);
+			}
+		}, backgroundExecutor);
+	}
+
+	public CompletableFuture<BundleOperationResult> restoreVanilla(
+		AssetResolutionResult resolution
+	) {
+		CraftStudioProject project = requireActiveProject();
+		return CompletableFuture.supplyAsync(() -> {
+			try {
+				BundleOperationResult result = bundleService.restoreVanilla(project, resolution);
+				refreshActiveProject(result.project());
+				CraftStudio.LOGGER.info(
+					"Bundle restored asset_id={} restored={} operation=bundle_restore",
+					resolution.root().identifier(),
+					result.copiedFiles()
+				);
+				return result;
+			} catch (ProjectOperationException exception) {
+				throw new CompletionException(exception);
+			}
+		}, backgroundExecutor);
+	}
+
+	public CompletableFuture<RemovalPlan> createRemovalPlan(
+		AssetResolutionResult resolution
+	) {
+		CraftStudioProject project = requireActiveProject();
+		return CompletableFuture.supplyAsync(() -> {
+			try {
+				List<AssetResolutionResult> otherRoots = project.metadata().selectedRoots().stream()
+					.map(this::selectedRootKey)
+					.filter(key -> !key.equals(resolution.root()))
+					.map(this::resolveRoot)
+					.toList();
+				return bundleService.createRemovalPlan(project, resolution, otherRoots);
+			} catch (ProjectOperationException exception) {
+				throw new CompletionException(exception);
+			}
+		}, backgroundExecutor);
+	}
+
+	public CompletableFuture<BundleOperationResult> removeRoot(RemovalPlan plan) {
+		CraftStudioProject project = requireActiveProject();
+		return CompletableFuture.supplyAsync(() -> {
+			try {
+				BundleOperationResult result = bundleService.removeRoot(project, plan);
+				refreshActiveProject(result.project());
+				CraftStudio.LOGGER.info(
+					"Bundle root removed asset_id={} removed={} retained={} operation=bundle_remove",
+					plan.root().identifier(),
+					result.removedFiles(),
+					result.keptFiles()
+				);
+				return result;
+			} catch (ProjectOperationException exception) {
+				throw new CompletionException(exception);
+			}
+		}, backgroundExecutor);
+	}
+
+	public boolean isSelectedRoot(CatalogAsset asset) {
+		CraftStudioProject project = activeProject;
+		return project != null && project.metadata().selectedRoots().stream()
+			.anyMatch(root -> root.type().equalsIgnoreCase(asset.kind().name())
+				&& root.id().equals(asset.identifier()));
+	}
+
+	public CompletableFuture<BundleFileComparison> compareWithVanilla(ResourcePath path) {
+		CraftStudioProject project = requireActiveProject();
+		return CompletableFuture.supplyAsync(() -> {
+			try {
+				byte[] projectBytes = new ProjectAssetSource(project).read(path)
+					.orElseThrow(() -> new IOException(
+						"Project file is no longer available: " + path.packPath()
+					))
+					.bytes();
+				byte[] vanillaBytes = vanillaAssetSource.read(path)
+					.orElseThrow(() -> new IOException(
+						"Vanilla file is unavailable: " + path.packPath()
+					))
+					.bytes();
+				return new BundleFileComparison(
+					path,
+					projectBytes.length,
+					vanillaBytes.length,
+					sha256(projectBytes),
+					sha256(vanillaBytes)
+				);
+			} catch (IOException exception) {
+				throw new CompletionException(exception);
+			}
+		}, backgroundExecutor);
+	}
+
 	public List<RecentProjectView> recentProjects() {
 		return recentProjects;
 	}
@@ -331,6 +481,60 @@ public final class CraftStudioClientContext implements AutoCloseable {
 				project.metadata().projectId(),
 				exception
 			);
+		}
+	}
+
+	private CraftStudioProject requireActiveProject() {
+		CraftStudioProject project = activeProject;
+		if (project == null) {
+			throw new IllegalStateException("Open or create a CraftStudio project first.");
+		}
+		return project;
+	}
+
+	private synchronized void refreshActiveProject(CraftStudioProject project) {
+		if (activeProject == null
+			|| !activeProject.metadata().projectId().equals(project.metadata().projectId())) {
+			return;
+		}
+		activeProject = project;
+		activeProjectSource = new ProjectAssetSource(project);
+	}
+
+	private AssetKey selectedRootKey(ProjectMetadata.SelectedRoot root) {
+		try {
+			AssetKind kind = AssetKind.valueOf(root.type().toUpperCase(java.util.Locale.ROOT));
+			int separator = root.id().indexOf(':');
+			if (separator <= 0 || separator == root.id().length() - 1) {
+				throw new IllegalArgumentException("Missing namespace or path.");
+			}
+			return new AssetKey(
+				kind,
+				root.id().substring(0, separator),
+				root.id().substring(separator + 1)
+			);
+		} catch (RuntimeException exception) {
+			throw new CompletionException(new ProjectOperationException(
+				"Project contains an invalid selected root: " + root.id(),
+				exception
+			));
+		}
+	}
+
+	private AssetResolutionResult resolveRoot(AssetKey key) {
+		return switch (key.kind()) {
+			case BLOCK -> blockDependencyResolver.resolve(key);
+			case ITEM -> itemDependencyResolver.resolve(key);
+		};
+	}
+
+	private String sha256(byte[] bytes) {
+		try {
+			return java.util.HexFormat.of().formatHex(
+				MessageDigest.getInstance("SHA-256").digest(bytes)
+			);
+		} catch (NoSuchAlgorithmException exception) {
+			throw new IllegalStateException("SHA-256 is unavailable.", exception);
 		}
 	}
 

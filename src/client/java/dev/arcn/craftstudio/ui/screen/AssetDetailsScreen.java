@@ -10,6 +10,10 @@ import dev.arcn.craftstudio.graph.domain.GraphEdgeType;
 import dev.arcn.craftstudio.graph.domain.GraphNodeType;
 import dev.arcn.craftstudio.graph.domain.ResolutionIssue;
 import dev.arcn.craftstudio.graph.domain.ResolutionIssueSeverity;
+import dev.arcn.craftstudio.project.domain.BundleOperationResult;
+import dev.arcn.craftstudio.project.domain.CopyPlan;
+import dev.arcn.craftstudio.project.domain.RemovalPlan;
+import dev.arcn.craftstudio.project.domain.SelectionMode;
 import dev.arcn.craftstudio.resource.domain.SourceLayer;
 import dev.arcn.craftstudio.ui.theme.CraftStudioTheme;
 import dev.arcn.craftstudio.ui.widget.DependencyTreeWidget;
@@ -38,6 +42,9 @@ public final class AssetDetailsScreen extends Screen {
 	private double detailScrollY;
 	private List<DependencyTreeWidget.Row> rows = List.of();
 	private DependencyTreeWidget detailList;
+	private boolean operationBusy;
+	private Text operationMessage;
+	private boolean operationFailed;
 
 	public AssetDetailsScreen(
 		CraftStudioClientContext context,
@@ -77,7 +84,10 @@ public final class AssetDetailsScreen extends Screen {
 		int margin = getMargin();
 		int contentWidth = width - margin * 2;
 		int footerY = height - margin - BUTTON_HEIGHT;
-		int statusY = footerY - 12;
+		boolean showActions = context.activeProject() != null;
+		int firstActionY = footerY - 48;
+		int secondActionY = footerY - 24;
+		int statusY = showActions ? firstActionY - 12 : footerY - 12;
 		int rowsY = getRowsY();
 		detailList = new DependencyTreeWidget(
 			margin,
@@ -103,6 +113,58 @@ public final class AssetDetailsScreen extends Screen {
 				BUTTON_HEIGHT
 			).build()
 		);
+
+		if (showActions) {
+			int gap = CraftStudioTheme.SPACE_2;
+			int thirdWidth = (contentWidth - gap * 2) / 3;
+			ButtonWidget complete = ButtonWidget.builder(
+				Text.translatable("screen.craftstudio.bundle.add_complete"),
+				button -> beginPlan(SelectionMode.COMPLETE)
+			).dimensions(margin, firstActionY, thirdWidth, BUTTON_HEIGHT).build();
+			complete.active = canMaterialize();
+			addDrawableChild(complete);
+			ButtonWidget unique = ButtonWidget.builder(
+				Text.translatable("screen.craftstudio.bundle.add_unique"),
+				button -> beginPlan(SelectionMode.UNIQUE_ONLY)
+			).dimensions(
+				margin + thirdWidth + gap,
+				firstActionY,
+				thirdWidth,
+				BUTTON_HEIGHT
+			).build();
+			unique.active = canMaterialize();
+			addDrawableChild(unique);
+			ButtonWidget custom = ButtonWidget.builder(
+				Text.translatable("screen.craftstudio.bundle.choose_files"),
+				button -> beginPlan(SelectionMode.CUSTOM)
+			).dimensions(
+				margin + (thirdWidth + gap) * 2,
+				firstActionY,
+				contentWidth - thirdWidth * 2 - gap * 2,
+				BUTTON_HEIGHT
+			).build();
+			custom.active = canMaterialize();
+			addDrawableChild(custom);
+
+			int halfWidth = (contentWidth - gap) / 2;
+			ButtonWidget restore = ButtonWidget.builder(
+				Text.translatable("screen.craftstudio.bundle.restore"),
+				button -> confirmRestore()
+			).dimensions(margin, secondActionY, halfWidth, BUTTON_HEIGHT).build();
+			restore.active = canChangeSelectedRoot();
+			addDrawableChild(restore);
+			ButtonWidget remove = ButtonWidget.builder(
+				Text.translatable("screen.craftstudio.bundle.remove"),
+				button -> beginRemovalPlan()
+			).dimensions(
+				margin + halfWidth + gap,
+				secondActionY,
+				halfWidth,
+				BUTTON_HEIGHT
+			).build();
+			remove.active = canChangeSelectedRoot();
+			addDrawableChild(remove);
+		}
 	}
 
 	@Override
@@ -161,8 +223,10 @@ public final class AssetDetailsScreen extends Screen {
 			textRenderer,
 			statusText(),
 			width / 2,
-			height - margin - BUTTON_HEIGHT - 12,
-			resolutionError == null ? CraftStudioTheme.TEXT_MUTED : CraftStudioTheme.ERROR
+			height - margin - BUTTON_HEIGHT - (context.activeProject() == null ? 12 : 60),
+			operationFailed || resolutionError != null
+				? CraftStudioTheme.ERROR
+				: operationBusy ? CraftStudioTheme.INFORMATION : CraftStudioTheme.TEXT_MUTED
 		);
 		super.render(drawContext, mouseX, mouseY, deltaTicks);
 	}
@@ -255,6 +319,9 @@ public final class AssetDetailsScreen extends Screen {
 	}
 
 	private Text statusText() {
+		if (operationMessage != null) {
+			return operationMessage;
+		}
 		if (resolutionError != null) {
 			return Text.translatable("screen.craftstudio.asset_details.failed");
 		}
@@ -270,6 +337,189 @@ public final class AssetDetailsScreen extends Screen {
 			);
 		}
 		return Text.translatable("screen.craftstudio.asset_details.resolving");
+	}
+
+	void reviewPlan(CopyPlan plan) {
+		operationBusy = false;
+		if (!plan.conflicts().isEmpty()) {
+			client.setScreen(new BundleConflictScreen(context, this, plan));
+			return;
+		}
+		applyPlan(plan, Set.of());
+	}
+
+	void applyPlan(CopyPlan plan, Set<String> replacements) {
+		client.setScreen(this);
+		operationBusy = true;
+		operationFailed = false;
+		operationMessage = Text.translatable("screen.craftstudio.bundle.copying");
+		clearAndInit();
+		context.addToProject(plan, replacements).whenCompleteAsync((result, failure) -> {
+			operationBusy = false;
+			if (failure == null) {
+				showSuccess(Text.translatable(
+					"screen.craftstudio.bundle.added",
+					result.copiedFiles(),
+					result.keptFiles()
+				));
+			} else {
+				showFailure(failure);
+			}
+			if (client.currentScreen == this) {
+				clearAndInit();
+			}
+		}, client);
+	}
+
+	private void beginPlan(SelectionMode mode) {
+		if (!canMaterialize()) {
+			return;
+		}
+		operationBusy = true;
+		operationFailed = false;
+		operationMessage = Text.translatable("screen.craftstudio.bundle.planning");
+		clearAndInit();
+		Set<String> customPaths = mode == SelectionMode.CUSTOM
+			? resolution.graph().nodes().values().stream()
+				.map(AssetGraphNode::packPath)
+				.filter(path -> !path.isEmpty())
+				.collect(java.util.stream.Collectors.toSet())
+			: Set.of();
+		context.createCopyPlan(resolution, mode, customPaths)
+			.whenCompleteAsync((plan, failure) -> {
+				operationBusy = false;
+				if (failure != null) {
+					showFailure(failure);
+					if (client.currentScreen == this) {
+						clearAndInit();
+					}
+				} else if (mode == SelectionMode.CUSTOM) {
+					operationMessage = null;
+					client.setScreen(new BundleSelectionScreen(context, this, resolution, plan));
+				} else {
+					operationMessage = null;
+					reviewPlan(plan);
+				}
+			}, client);
+	}
+
+	private void confirmRestore() {
+		List<String> files = resolvedPackPaths();
+		client.setScreen(new BundleConfirmationScreen(
+			this,
+			Text.translatable("screen.craftstudio.bundle.restore_title"),
+			Text.translatable("screen.craftstudio.bundle.restore_warning", files.size()),
+			files,
+			this::restoreVanilla
+		));
+	}
+
+	private void restoreVanilla() {
+		operationBusy = true;
+		operationFailed = false;
+		operationMessage = Text.translatable("screen.craftstudio.bundle.restoring");
+		clearAndInit();
+		context.restoreVanilla(resolution).whenCompleteAsync((result, failure) -> {
+			operationBusy = false;
+			if (failure == null) {
+				showSuccess(Text.translatable(
+					"screen.craftstudio.bundle.restored",
+					result.copiedFiles()
+				));
+			} else {
+				showFailure(failure);
+			}
+			if (client.currentScreen == this) {
+				clearAndInit();
+			}
+		}, client);
+	}
+
+	private void beginRemovalPlan() {
+		operationBusy = true;
+		operationFailed = false;
+		operationMessage = Text.translatable("screen.craftstudio.bundle.planning_removal");
+		clearAndInit();
+		context.createRemovalPlan(resolution).whenCompleteAsync((plan, failure) -> {
+			operationBusy = false;
+			if (failure != null) {
+				showFailure(failure);
+				clearAndInit();
+				return;
+			}
+			operationMessage = null;
+			List<String> summary = new ArrayList<>();
+			summary.add("Remove " + plan.removableFiles().size() + " exclusive vanilla files");
+			summary.add("Keep " + plan.sharedFiles().size() + " files shared with other roots");
+			summary.add("Keep " + plan.modifiedFiles().size() + " edited or custom files");
+			summary.addAll(plan.removableFiles().stream()
+				.map(path -> "REMOVE  " + path.packPath())
+				.toList());
+			summary.addAll(plan.sharedFiles().stream()
+				.map(path -> "KEEP SHARED  " + path.packPath())
+				.toList());
+			summary.addAll(plan.modifiedFiles().stream()
+				.map(path -> "KEEP EDITED  " + path.packPath())
+				.toList());
+			client.setScreen(new BundleConfirmationScreen(
+				this,
+				Text.translatable("screen.craftstudio.bundle.remove_title"),
+				Text.translatable("screen.craftstudio.bundle.remove_warning"),
+				summary,
+				() -> removeRoot(plan)
+			));
+		}, client);
+	}
+
+	private void removeRoot(RemovalPlan plan) {
+		operationBusy = true;
+		operationFailed = false;
+		operationMessage = Text.translatable("screen.craftstudio.bundle.removing");
+		clearAndInit();
+		context.removeRoot(plan).whenCompleteAsync((result, failure) -> {
+			operationBusy = false;
+			if (failure == null) {
+				showSuccess(Text.translatable(
+					"screen.craftstudio.bundle.removed",
+					result.removedFiles(),
+					result.keptFiles()
+				));
+			} else {
+				showFailure(failure);
+			}
+			if (client.currentScreen == this) {
+				clearAndInit();
+			}
+		}, client);
+	}
+
+	private boolean canMaterialize() {
+		return !operationBusy
+			&& resolution != null
+			&& !resolution.hasErrors();
+	}
+
+	private boolean canChangeSelectedRoot() {
+		return canMaterialize() && context.isSelectedRoot(asset);
+	}
+
+	private List<String> resolvedPackPaths() {
+		return resolution.graph().nodes().values().stream()
+			.map(AssetGraphNode::packPath)
+			.filter(path -> !path.isEmpty())
+			.distinct()
+			.sorted()
+			.toList();
+	}
+
+	private void showSuccess(Text message) {
+		operationFailed = false;
+		operationMessage = message;
+	}
+
+	private void showFailure(Throwable failure) {
+		operationFailed = true;
+		operationMessage = Text.literal(CraftStudioClientContext.userMessage(failure));
 	}
 
 	private List<DependencyTreeWidget.Row> displayRows() {

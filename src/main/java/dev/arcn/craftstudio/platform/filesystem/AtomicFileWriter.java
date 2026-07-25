@@ -14,6 +14,13 @@ import java.util.UUID;
 
 public final class AtomicFileWriter {
 	public void writeUtf8(Path target, String content) throws IOException {
+		writeBytes(
+			target,
+			Objects.requireNonNull(content, "content").getBytes(StandardCharsets.UTF_8)
+		);
+	}
+
+	public void writeBytes(Path target, byte[] content) throws IOException {
 		Path normalizedTarget = Objects.requireNonNull(target, "target").toAbsolutePath().normalize();
 		Path parent = normalizedTarget.getParent();
 		if (parent == null) {
@@ -27,7 +34,7 @@ public final class AtomicFileWriter {
 		Path temporaryFile = parent.resolve(
 			"." + normalizedTarget.getFileName() + ".craftstudio-" + UUID.randomUUID() + ".tmp"
 		);
-		byte[] bytes = Objects.requireNonNull(content, "content").getBytes(StandardCharsets.UTF_8);
+		byte[] bytes = Objects.requireNonNull(content, "content").clone();
 
 		try {
 			try (FileChannel channel = FileChannel.open(
