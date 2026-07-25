@@ -12,8 +12,13 @@ import dev.arcn.craftstudio.graph.resolver.BlockDependencyResolver;
 import dev.arcn.craftstudio.graph.resolver.ItemDependencyResolver;
 import dev.arcn.craftstudio.platform.filesystem.AtomicFileWriter;
 import dev.arcn.craftstudio.platform.paths.WorkspacePaths;
+import dev.arcn.craftstudio.platform.process.EditorSettings;
+import dev.arcn.craftstudio.platform.process.EditorSettingsRepository;
+import dev.arcn.craftstudio.platform.process.ExternalEditorService;
 import dev.arcn.craftstudio.preview.application.PreviewService;
 import dev.arcn.craftstudio.preview.domain.PreviewScene;
+import dev.arcn.craftstudio.preview.domain.PreviewScene.Texture;
+import dev.arcn.craftstudio.preview.domain.PreviewScene.Variant;
 import dev.arcn.craftstudio.project.application.BundleService;
 import dev.arcn.craftstudio.project.application.ProjectService;
 import dev.arcn.craftstudio.project.domain.BundleOperationResult;
@@ -34,6 +39,9 @@ import dev.arcn.craftstudio.resource.domain.ResourcePath;
 import dev.arcn.craftstudio.resource.infrastructure.filesystem.ProjectAssetSource;
 import dev.arcn.craftstudio.resource.infrastructure.LayeredPreviewAssetSource;
 import dev.arcn.craftstudio.resource.infrastructure.minecraft.VanillaAssetSource;
+import dev.arcn.craftstudio.reload.ProjectFileChangeBatch;
+import dev.arcn.craftstudio.reload.ProjectFileWatcher;
+import dev.arcn.craftstudio.reload.ReloadClassification;
 import dev.arcn.craftstudio.version.TargetVersionManifest;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -43,7 +51,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -68,6 +78,8 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private final VanillaAssetSource vanillaAssetSource;
 	private final BlockDependencyResolver blockDependencyResolver;
 	private final ItemDependencyResolver itemDependencyResolver;
+	private final EditorSettingsRepository editorSettingsRepository;
+	private final ExternalEditorService externalEditorService;
 	private final String targetVersion;
 	private final ExecutorService backgroundExecutor;
 	private final ConcurrentHashMap<String, CompletableFuture<AssetResolutionResult>> blockResolutionCache =
@@ -76,9 +88,16 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		new ConcurrentHashMap<>();
 	private final ConcurrentHashMap<String, CompletableFuture<PreviewScene>> previewCache =
 		new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<String, AssetKey> previewCacheRoots = new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<AssetKey, Set<ResourcePath>> previewDependencies =
+		new ConcurrentHashMap<>();
+	private final ConcurrentHashMap<AssetKey, AtomicLong> previewRootRevisions =
+		new ConcurrentHashMap<>();
 	private final AtomicLong recentProjectsRevision = new AtomicLong();
 	private final AtomicLong catalogRevision = new AtomicLong();
 	private final AtomicLong previewRevision = new AtomicLong();
+	private final AtomicLong projectReloadRevision = new AtomicLong();
+	private final AtomicLong settingsRevision = new AtomicLong();
 
 	private volatile List<RecentProjectView> recentProjects = List.of();
 	private volatile CraftStudioProject activeProject;
@@ -86,6 +105,9 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private volatile CatalogIndex catalogIndex;
 	private volatile boolean catalogLoading;
 	private volatile String catalogError;
+	private volatile EditorSettings editorSettings = EditorSettings.DEFAULT;
+	private volatile ProjectReloadEvent projectReloadEvent = ProjectReloadEvent.NONE;
+	private volatile ProjectFileWatcher projectFileWatcher;
 	private boolean catalogStarted;
 
 	private CraftStudioClientContext(
@@ -97,6 +119,8 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		VanillaAssetSource vanillaAssetSource,
 		BlockDependencyResolver blockDependencyResolver,
 		ItemDependencyResolver itemDependencyResolver,
+		EditorSettingsRepository editorSettingsRepository,
+		ExternalEditorService externalEditorService,
 		String targetVersion
 	) {
 		this.workspacePaths = workspacePaths;
@@ -107,6 +131,8 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		this.vanillaAssetSource = vanillaAssetSource;
 		this.blockDependencyResolver = blockDependencyResolver;
 		this.itemDependencyResolver = itemDependencyResolver;
+		this.editorSettingsRepository = editorSettingsRepository;
+		this.externalEditorService = externalEditorService;
 		this.targetVersion = targetVersion;
 		this.backgroundExecutor = Executors.newFixedThreadPool(2, Thread.ofPlatform()
 			.name("craftstudio-worker-", 0)
@@ -152,12 +178,18 @@ public final class CraftStudioClientContext implements AutoCloseable {
 			vanillaAssets,
 			new BlockDependencyResolver(vanillaAssets, target.minecraftVersion()),
 			new ItemDependencyResolver(vanillaAssets, target.minecraftVersion()),
+			new EditorSettingsRepository(
+				configRoot.resolve("editor-settings.json"),
+				atomicFileWriter
+			),
+			new ExternalEditorService(),
 			target.minecraftVersion()
 		);
 	}
 
 	public void initialize() {
 		CompletableFuture.runAsync(this::loadRecentProjectsSafely, backgroundExecutor);
+		CompletableFuture.runAsync(this::loadEditorSettingsSafely, backgroundExecutor);
 	}
 
 	public void verifyVanillaSource() {
@@ -324,15 +356,19 @@ public final class CraftStudioClientContext implements AutoCloseable {
 
 	public CompletableFuture<PreviewScene> createPreview(AssetResolutionResult catalogResolution) {
 		Objects.requireNonNull(catalogResolution, "catalogResolution");
-		CraftStudioProject project = activeProject;
-		AssetSource projectSource = project == null ? null : new ProjectAssetSource(project);
+		AssetSource projectSource = activeProjectSource;
 		LayeredPreviewAssetSource effectiveSource = new LayeredPreviewAssetSource(
 			projectSource,
 			vanillaAssetSource
 		);
 		String cacheKey = previewRevision.get()
 			+ "|"
-			+ effectiveSource.revision()
+			+ previewRootRevisions.computeIfAbsent(
+				catalogResolution.root(),
+				ignored -> new AtomicLong()
+			).get()
+			+ "|"
+			+ vanillaAssetSource.revision()
 			+ "|"
 			+ catalogResolution.root().kind()
 			+ "|"
@@ -340,7 +376,9 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		if (previewCache.size() >= MAX_PREVIEW_CACHE_ENTRIES
 			&& !previewCache.containsKey(cacheKey)) {
 			previewCache.clear();
+			previewCacheRoots.clear();
 		}
+		previewCacheRoots.put(cacheKey, catalogResolution.root());
 		return previewCache.computeIfAbsent(cacheKey, ignored -> {
 			CompletableFuture<PreviewScene> future = CompletableFuture.supplyAsync(() -> {
 				AssetResolutionResult effectiveResolution = switch (catalogResolution.root().kind()) {
@@ -353,12 +391,20 @@ public final class CraftStudioClientContext implements AutoCloseable {
 						targetVersion
 					).resolve(catalogResolution.root());
 				};
+				previewDependencies.put(
+					catalogResolution.root(),
+					effectiveResolution.graph().nodes().values().stream()
+						.map(node -> node.resourcePath().orElse(null))
+						.filter(Objects::nonNull)
+						.collect(java.util.stream.Collectors.toUnmodifiableSet())
+				);
 				return new PreviewService(effectiveSource, targetVersion)
 					.createScene(effectiveResolution);
 			}, backgroundExecutor);
 			future.whenComplete((scene, failure) -> {
 				if (failure != null) {
 					previewCache.remove(cacheKey, future);
+					previewCacheRoots.remove(cacheKey);
 					CraftStudio.LOGGER.error(
 						"Preview preparation failed asset_id={} operation=preview_prepare",
 						catalogResolution.root().identifier(),
@@ -385,8 +431,78 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	public CompletableFuture<PreviewScene> refreshPreview(
 		AssetResolutionResult catalogResolution
 	) {
-		invalidatePreviewCache();
+		invalidatePreviewCache(catalogResolution.root());
 		return createPreview(catalogResolution);
+	}
+
+	public EditorSettings editorSettings() {
+		return editorSettings;
+	}
+
+	public long settingsRevision() {
+		return settingsRevision.get();
+	}
+
+	public boolean autoReloadEnabled() {
+		CraftStudioProject project = activeProject;
+		return project != null && project.metadata().settings().autoReload();
+	}
+
+	public ProjectReloadEvent projectReloadEvent() {
+		return projectReloadEvent;
+	}
+
+	public CompletableFuture<SettingsSnapshot> saveReloadAndEditorSettings(
+		String preferredImageEditor,
+		boolean autoReload
+	) {
+		CraftStudioProject project = activeProject;
+		EditorSettings requestedEditorSettings = new EditorSettings(preferredImageEditor);
+		return CompletableFuture.supplyAsync(() -> {
+			try {
+				editorSettingsRepository.save(requestedEditorSettings);
+				CraftStudioProject updatedProject = project;
+				if (project != null) {
+					ProjectMetadata.ProjectSettings current = project.metadata().settings();
+					updatedProject = projectService.updateSettings(
+						project,
+						new ProjectMetadata.ProjectSettings(autoReload, current.advancedMode())
+					);
+				}
+				editorSettings = requestedEditorSettings;
+				if (updatedProject != null) {
+					updateActiveProjectMetadata(updatedProject);
+				}
+				settingsRevision.incrementAndGet();
+				return new SettingsSnapshot(requestedEditorSettings, autoReload);
+			} catch (IOException | ProjectOperationException exception) {
+				throw new CompletionException(exception);
+			}
+		}, backgroundExecutor);
+	}
+
+	public CompletableFuture<ExternalEditorService.LaunchResult> openProjectTexture(
+		Variant variant
+	) {
+		CraftStudioProject project = requireActiveProject();
+		Texture texture = preferredProjectTexture(variant).orElseThrow(
+			() -> new IllegalStateException(
+				"This preview has no project texture override. Add the asset bundle first."
+			)
+		);
+		Path file = project.packRoot().resolve(texture.path().packPath()).normalize();
+		if (!file.startsWith(project.packRoot())) {
+			return CompletableFuture.failedFuture(
+				new IOException("Project texture path escaped the active pack.")
+			);
+		}
+		return CompletableFuture.supplyAsync(() -> {
+			try {
+				return externalEditorService.openImage(file, editorSettings);
+			} catch (IOException exception) {
+				throw new CompletionException(exception);
+			}
+		}, backgroundExecutor);
 	}
 
 	public CompletableFuture<CopyPlan> createCopyPlan(
@@ -537,6 +653,7 @@ public final class CraftStudioClientContext implements AutoCloseable {
 
 	@Override
 	public void close() {
+		closeProjectWatcher();
 		backgroundExecutor.shutdownNow();
 	}
 
@@ -550,10 +667,12 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		return message == null || message.isBlank() ? "The operation failed unexpectedly." : message;
 	}
 
-	private void recordOpenedProject(CraftStudioProject project) {
+	private synchronized void recordOpenedProject(CraftStudioProject project) {
+		closeProjectWatcher();
 		activeProject = project;
 		activeProjectSource = new ProjectAssetSource(project);
 		invalidatePreviewCache();
+		startProjectWatcher(project);
 		try {
 			setRecentProjects(recentProjectRegistry.touch(project, Instant.now()));
 		} catch (IOException exception) {
@@ -586,6 +705,127 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	private void invalidatePreviewCache() {
 		previewRevision.incrementAndGet();
 		previewCache.clear();
+		previewCacheRoots.clear();
+		previewDependencies.clear();
+		previewRootRevisions.clear();
+	}
+
+	private void invalidatePreviewCache(AssetKey root) {
+		previewRootRevisions.computeIfAbsent(root, ignored -> new AtomicLong()).incrementAndGet();
+		previewCacheRoots.forEach((cacheKey, cacheRoot) -> {
+			if (cacheRoot.equals(root)) {
+				previewCache.remove(cacheKey);
+				previewCacheRoots.remove(cacheKey);
+			}
+		});
+	}
+
+	private void updateActiveProjectMetadata(CraftStudioProject project) {
+		synchronized (this) {
+			if (activeProject != null
+				&& activeProject.metadata().projectId().equals(project.metadata().projectId())) {
+				activeProject = project;
+			}
+		}
+	}
+
+	private Optional<Texture> preferredProjectTexture(Variant variant) {
+		Optional<Texture> frontTexture = variant.faces().stream()
+			.filter(face -> face.direction().equals("north"))
+			.map(face -> variant.textures().get(face.textureKey()))
+			.filter(Objects::nonNull)
+			.filter(texture -> texture.sourceLayer()
+				== dev.arcn.craftstudio.resource.domain.SourceLayer.PROJECT)
+			.findFirst();
+		if (frontTexture.isPresent()) {
+			return frontTexture;
+		}
+		return variant.textures().values().stream()
+			.filter(texture -> texture.sourceLayer()
+				== dev.arcn.craftstudio.resource.domain.SourceLayer.PROJECT)
+			.sorted(java.util.Comparator.comparing(texture -> texture.path().packPath()))
+			.findFirst();
+	}
+
+	private synchronized void startProjectWatcher(CraftStudioProject project) {
+		try {
+			projectFileWatcher = new ProjectFileWatcher(
+				project.packRoot(),
+				ProjectFileWatcher.DEFAULT_DEBOUNCE,
+				batch -> handleProjectFileChanges(project.metadata().projectId(), batch)
+			);
+			CraftStudio.LOGGER.info(
+				"Watching project pack project_id={} pack_root={} operation=project_watch_start",
+				project.metadata().projectId(),
+				project.packRoot()
+			);
+		} catch (IOException exception) {
+			CraftStudio.LOGGER.error(
+				"Could not watch project pack project_id={} pack_root={} operation=project_watch_start",
+				project.metadata().projectId(),
+				project.packRoot(),
+				exception
+			);
+		}
+	}
+
+	private synchronized void closeProjectWatcher() {
+		ProjectFileWatcher watcher = projectFileWatcher;
+		projectFileWatcher = null;
+		if (watcher != null) {
+			watcher.close();
+		}
+	}
+
+	private void handleProjectFileChanges(String projectId, ProjectFileChangeBatch batch) {
+		CraftStudioProject project = activeProject;
+		ProjectAssetSource projectSource = activeProjectSource;
+		if (project == null
+			|| projectSource == null
+			|| !project.metadata().projectId().equals(projectId)) {
+			return;
+		}
+
+		LinkedHashSet<ResourcePath> changedResources = new LinkedHashSet<>();
+		batch.changes().keySet().forEach(relativePath -> batch.resourcePath(relativePath)
+			.ifPresent(path -> {
+				changedResources.add(path);
+				if (path.path().endsWith(".png.mcmeta")) {
+					changedResources.add(new ResourcePath(
+						path.namespace(),
+						path.path().substring(0, path.path().length() - ".mcmeta".length())
+					));
+				}
+			}));
+		Set<AssetKey> affectedRoots;
+		boolean broad = batch.requiresBroadPreviewInvalidation();
+		if (broad) {
+			affectedRoots = Set.copyOf(previewDependencies.keySet());
+			invalidatePreviewCache();
+		} else {
+			affectedRoots = previewDependencies.entrySet().stream()
+				.filter(entry -> entry.getValue().stream().anyMatch(changedResources::contains))
+				.map(Map.Entry::getKey)
+				.collect(java.util.stream.Collectors.toUnmodifiableSet());
+			affectedRoots.forEach(this::invalidatePreviewCache);
+		}
+		projectSource.advanceRevision();
+		long revision = projectReloadRevision.incrementAndGet();
+		projectReloadEvent = new ProjectReloadEvent(
+			revision,
+			batch.changes(),
+			Set.copyOf(changedResources),
+			affectedRoots,
+			broad
+		);
+		CraftStudio.LOGGER.info(
+			"Project files changed project_id={} file_count={} affected_preview_count={} broad={} auto_reload={} operation=project_watch_change",
+			projectId,
+			batch.changes().size(),
+			affectedRoots.size(),
+			broad,
+			project.metadata().settings().autoReload()
+		);
 	}
 
 	private AssetKey selectedRootKey(ProjectMetadata.SelectedRoot root) {
@@ -667,6 +907,19 @@ public final class CraftStudioClientContext implements AutoCloseable {
 		}
 	}
 
+	private void loadEditorSettingsSafely() {
+		try {
+			editorSettings = editorSettingsRepository.load();
+		} catch (IOException exception) {
+			CraftStudio.LOGGER.warn(
+				"Could not load editor settings operation=editor_settings_load",
+				exception
+			);
+			editorSettings = EditorSettings.DEFAULT;
+		}
+		settingsRevision.incrementAndGet();
+	}
+
 	private void setRecentProjects(List<RecentProjectEntry> entries) {
 		recentProjects = entries.stream()
 			.map(entry -> new RecentProjectView(entry, isAvailable(entry)))
@@ -695,6 +948,40 @@ public final class CraftStudioClientContext implements AutoCloseable {
 	) {
 		public boolean ready() {
 			return index != null;
+		}
+	}
+
+	public record SettingsSnapshot(EditorSettings editorSettings, boolean autoReload) {
+		public SettingsSnapshot {
+			editorSettings = Objects.requireNonNull(editorSettings, "editorSettings");
+		}
+	}
+
+	public record ProjectReloadEvent(
+		long revision,
+		Map<Path, ReloadClassification> changes,
+		Set<ResourcePath> changedResources,
+		Set<AssetKey> affectedRoots,
+		boolean broadPreviewInvalidation
+	) {
+		private static final ProjectReloadEvent NONE = new ProjectReloadEvent(
+			0,
+			Map.of(),
+			Set.of(),
+			Set.of(),
+			false
+		);
+
+		public ProjectReloadEvent {
+			changes = Map.copyOf(Objects.requireNonNull(changes, "changes"));
+			changedResources = Set.copyOf(
+				Objects.requireNonNull(changedResources, "changedResources")
+			);
+			affectedRoots = Set.copyOf(Objects.requireNonNull(affectedRoots, "affectedRoots"));
+		}
+
+		public boolean affects(AssetKey root) {
+			return broadPreviewInvalidation || affectedRoots.contains(root);
 		}
 	}
 }

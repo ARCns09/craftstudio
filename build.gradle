@@ -104,6 +104,14 @@ tasks.register("previewServiceTest", JavaExec) {
 	mainClass = "dev.arcn.craftstudio.preview.PreviewServiceTest"
 }
 
+tasks.register("liveReloadTest", JavaExec) {
+	group = "verification"
+	description = "Runs project watcher, debounce, classification, and editor settings tests."
+	dependsOn testClasses
+	classpath = sourceSets.test.runtimeClasspath
+	mainClass = "dev.arcn.craftstudio.reload.LiveReloadTest"
+}
+
 tasks.named("test") {
 	failOnNoDiscoveredTests = false
 }
@@ -114,7 +122,8 @@ check.dependsOn projectFoundationTest,
 	blockResolverTest,
 	itemResolverTest,
 	bundleServiceTest,
-	previewServiceTest
+	previewServiceTest,
+	liveReloadTest
 
 java {
 	// Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task

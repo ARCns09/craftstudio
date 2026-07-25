@@ -77,12 +77,24 @@ public final class CraftStudioHomeScreen extends Screen {
 		browseAssetsButton.active = !busy;
 		addDrawableChild(browseAssetsButton);
 
+		ButtonWidget settingsButton = ButtonWidget.builder(
+			Text.translatable("screen.craftstudio.home.settings"),
+			button -> client.setScreen(new ReloadEditorSettingsScreen(context, this))
+		).dimensions(
+			contentX,
+			buttonY + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 2,
+			contentWidth,
+			BUTTON_HEIGHT
+		).build();
+		settingsButton.active = !busy;
+		addDrawableChild(settingsButton);
+
 		ButtonWidget closeButton = ButtonWidget.builder(
 			Text.translatable("screen.craftstudio.home.close"),
 			button -> close()
 		).dimensions(
 			contentX,
-			buttonY + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 2,
+			buttonY + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 3,
 			contentWidth,
 			BUTTON_HEIGHT
 		).build();
@@ -276,6 +288,6 @@ public final class CraftStudioHomeScreen extends Screen {
 	}
 
 	private int getRecentHeaderY() {
-		return getButtonY() + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 3 + 8;
+		return getButtonY() + (BUTTON_HEIGHT + CraftStudioTheme.SPACE_2) * 4 + 8;
 	}
 }

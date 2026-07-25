@@ -147,6 +147,33 @@ public final class ProjectService {
 		return new CraftStudioProject(projectRoot, metadata);
 	}
 
+	public CraftStudioProject updateSettings(
+		CraftStudioProject project,
+		ProjectMetadata.ProjectSettings settings
+	) throws ProjectOperationException {
+		ProjectMetadata current = project.metadata();
+		ProjectMetadata updated = new ProjectMetadata(
+			current.schemaVersion(),
+			current.projectId(),
+			current.name(),
+			current.slug(),
+			current.description(),
+			current.author(),
+			current.target(),
+			current.packRoot(),
+			current.createdAt(),
+			clock.instant().toString(),
+			current.selectedRoots(),
+			settings
+		);
+		try {
+			metadataRepository.save(project.root(), updated);
+			return new CraftStudioProject(project.root(), updated);
+		} catch (IOException exception) {
+			throw new ProjectOperationException("Could not save project settings.", exception);
+		}
+	}
+
 	public static String slugify(String name) {
 		String slug = name.strip().toLowerCase(Locale.ROOT)
 			.replaceAll("[^a-z0-9]+", "-")

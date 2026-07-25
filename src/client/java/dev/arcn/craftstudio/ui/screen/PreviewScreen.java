@@ -28,7 +28,11 @@ public final class PreviewScreen extends Screen {
 	private PreviewMode mode;
 	private int variantIndex;
 	private boolean refreshing;
+	private boolean launchingEditor;
 	private Text refreshError;
+	private Text statusNotice;
+	private int statusNoticeColor = CraftStudioTheme.SUCCESS;
+	private long observedReloadRevision;
 	private PreviewTextureLibrary textureLibrary;
 	private PreviewViewportWidget viewport;
 	private final Map<String, ButtonWidget> propertyButtons = new LinkedHashMap<>();
@@ -39,6 +43,16 @@ public final class PreviewScreen extends Screen {
 		AssetResolutionResult catalogResolution,
 		PreviewScene scene
 	) {
+		this(context, parent, catalogResolution, scene, null);
+	}
+
+	private PreviewScreen(
+		CraftStudioClientContext context,
+		Screen parent,
+		AssetResolutionResult catalogResolution,
+		PreviewScene scene,
+		Text statusNotice
+	) {
 		super(Text.translatable("screen.craftstudio.preview.title"));
 		this.context = context;
 		this.parent = parent;
@@ -46,6 +60,8 @@ public final class PreviewScreen extends Screen {
 		this.scene = scene;
 		this.mode = scene.supports(PreviewMode.BLOCK) ? PreviewMode.BLOCK : PreviewMode.ITEM;
 		this.variantIndex = scene.preferredVariantIndex(mode);
+		this.statusNotice = statusNotice;
+		this.observedReloadRevision = context.projectReloadEvent().revision();
 	}
 
 	@Override
@@ -134,6 +150,7 @@ public final class PreviewScreen extends Screen {
 			}
 		}
 
+		int footerButtonWidth = (contentWidth - gap * 3) / 4;
 		ButtonWidget reset = ButtonWidget.builder(
 			Text.translatable("screen.craftstudio.preview.reset_camera"),
 			button -> {
@@ -141,32 +158,68 @@ public final class PreviewScreen extends Screen {
 					viewport.resetCamera();
 				}
 			}
-		).dimensions(margin, footerY, thirdWidth, BUTTON_HEIGHT).build();
+		).dimensions(margin, footerY, footerButtonWidth, BUTTON_HEIGHT).build();
 		reset.active = viewport != null && !refreshing;
 		addDrawableChild(reset);
+		ButtonWidget openTexture = ButtonWidget.builder(
+			Text.translatable("screen.craftstudio.preview.open_texture"),
+			button -> openTexture()
+		).dimensions(
+			margin + footerButtonWidth + gap,
+			footerY,
+			footerButtonWidth,
+			BUTTON_HEIGHT
+		).build();
+		openTexture.active = !refreshing
+			&& !launchingEditor
+			&& !variants.isEmpty()
+			&& hasProjectTexture();
+		addDrawableChild(openTexture);
 		ButtonWidget refresh = ButtonWidget.builder(
 			Text.translatable("screen.craftstudio.preview.refresh"),
 			button -> refresh()
 		).dimensions(
-			margin + thirdWidth + gap,
+			margin + (footerButtonWidth + gap) * 2,
 			footerY,
-			thirdWidth,
+			footerButtonWidth,
 			BUTTON_HEIGHT
 		).build();
-		refresh.active = !refreshing;
+		refresh.active = !refreshing && !launchingEditor;
 		addDrawableChild(refresh);
 		addDrawableChild(ButtonWidget.builder(
 			Text.translatable("screen.craftstudio.catalog.back"),
 			button -> close()
 		).dimensions(
-			margin + (thirdWidth + gap) * 2,
+			margin + (footerButtonWidth + gap) * 3,
 			footerY,
-			contentWidth - thirdWidth * 2 - gap * 2,
+			contentWidth - footerButtonWidth * 3 - gap * 3,
 			BUTTON_HEIGHT
 		).build());
 
 		if (viewport != null) {
 			setInitialFocus(viewport);
+		}
+	}
+
+	@Override
+	public void tick() {
+		CraftStudioClientContext.ProjectReloadEvent event = context.projectReloadEvent();
+		if (event.revision() == observedReloadRevision) {
+			return;
+		}
+		if (!event.affects(scene.root())) {
+			observedReloadRevision = event.revision();
+			return;
+		}
+		if (context.autoReloadEnabled()) {
+			if (!refreshing && !launchingEditor) {
+				observedReloadRevision = event.revision();
+				reload(false);
+			}
+		} else {
+			observedReloadRevision = event.revision();
+			statusNotice = Text.translatable("screen.craftstudio.preview.external_change_manual");
+			statusNoticeColor = CraftStudioTheme.WARNING;
 		}
 	}
 
@@ -312,17 +365,30 @@ public final class PreviewScreen extends Screen {
 	}
 
 	private void refresh() {
+		reload(true);
+	}
+
+	private void reload(boolean manual) {
 		refreshing = true;
 		refreshError = null;
+		statusNotice = null;
 		clearAndInit();
-		context.refreshPreview(catalogResolution).whenCompleteAsync((refreshed, failure) -> {
+		(manual
+			? context.refreshPreview(catalogResolution)
+			: context.createPreview(catalogResolution)
+		).whenCompleteAsync((refreshed, failure) -> {
 			refreshing = false;
 			if (failure == null) {
 				client.setScreen(new PreviewScreen(
 					context,
 					parent,
 					catalogResolution,
-					refreshed
+					refreshed,
+					Text.translatable(
+						manual
+							? "screen.craftstudio.preview.refreshed"
+							: "screen.craftstudio.preview.auto_reloaded"
+					)
 				));
 			} else {
 				refreshError = Text.literal(CraftStudioClientContext.userMessage(failure));
@@ -331,12 +397,48 @@ public final class PreviewScreen extends Screen {
 		}, client);
 	}
 
+	private void openTexture() {
+		if (variants().isEmpty() || launchingEditor) {
+			return;
+		}
+		launchingEditor = true;
+		refreshError = null;
+		statusNotice = Text.translatable("screen.craftstudio.preview.opening_texture");
+		statusNoticeColor = CraftStudioTheme.INFORMATION;
+		clearAndInit();
+		context.openProjectTexture(currentVariant()).whenCompleteAsync((result, failure) -> {
+			launchingEditor = false;
+			if (failure == null) {
+				statusNotice = Text.translatable(
+					"screen.craftstudio.preview.texture_opened",
+					result.file().getFileName().toString()
+				);
+				statusNoticeColor = CraftStudioTheme.SUCCESS;
+			} else {
+				refreshError = Text.literal(CraftStudioClientContext.userMessage(failure));
+				statusNotice = null;
+			}
+			if (client.currentScreen == this) {
+				clearAndInit();
+			}
+		}, client);
+	}
+
+	private boolean hasProjectTexture() {
+		return currentVariant().textures().values().stream()
+			.anyMatch(texture -> texture.sourceLayer()
+				== dev.arcn.craftstudio.resource.domain.SourceLayer.PROJECT);
+	}
+
 	private Text statusText() {
 		if (refreshing) {
 			return Text.translatable("screen.craftstudio.preview.refreshing");
 		}
 		if (refreshError != null) {
 			return refreshError;
+		}
+		if (launchingEditor) {
+			return Text.translatable("screen.craftstudio.preview.opening_texture");
 		}
 		if (variants().isEmpty()) {
 			String diagnostic = scene.diagnostics().isEmpty()
@@ -353,6 +455,9 @@ public final class PreviewScreen extends Screen {
 		diagnostics.addAll(variant.diagnostics());
 		if (!diagnostics.isEmpty()) {
 			return Text.literal(shorten(diagnostics.getFirst()));
+		}
+		if (statusNotice != null) {
+			return statusNotice;
 		}
 		long projectTextures = variant.textures().values().stream()
 			.filter(texture -> texture.sourceLayer()
@@ -372,9 +477,13 @@ public final class PreviewScreen extends Screen {
 		if (refreshing) {
 			return CraftStudioTheme.INFORMATION;
 		}
-		return currentVariant().missingFaceCount() > 0
-			? CraftStudioTheme.WARNING
-			: CraftStudioTheme.SUCCESS;
+		if (currentVariant().missingFaceCount() > 0) {
+			return CraftStudioTheme.WARNING;
+		}
+		if (statusNotice != null) {
+			return statusNoticeColor;
+		}
+		return CraftStudioTheme.SUCCESS;
 	}
 
 	private String friendly(String value) {
